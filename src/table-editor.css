@@ -1,0 +1,602 @@
+.table-data-workspace {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  min-height: 400px;
+}
+.table-data-workspace .dbm-table-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 15px;
+  padding: 18px 18px 15px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.dbm-table-heading > div {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.dbm-table-heading > div > svg {
+  color: var(--accent);
+}
+.dbm-table-heading h2 {
+  font-size: 14px;
+  font-weight: 500;
+}
+.dbm-table-heading h2 > span {
+  font-weight: 650;
+  margin-left: 5px;
+}
+.dbm-table-heading p {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 5px;
+}
+.dbm-editability {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.dbm-editability.writable {
+  color: var(--teal);
+  background: var(--teal-soft);
+  border: 1px solid #4cb69b33;
+}
+.dbm-editability.readonly {
+  color: var(--muted);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+}
+.dbm-table-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border);
+}
+.dbm-table-toolbar .button {
+  min-height: 29px;
+  padding: 6px 8px;
+  font-size: 10px;
+}
+.dbm-table-toolbar kbd {
+  font-size: 8px;
+  color: var(--subtle);
+  padding-left: 4px;
+}
+.dbm-view-switch {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 2px;
+  gap: 2px;
+  background: var(--bg);
+}
+.dbm-view-switch > button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  padding: 6px 8px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.dbm-view-switch > button.active {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+.dbm-toolbar-separator {
+  height: 22px;
+  width: 1px;
+  background: var(--border);
+  margin: 0 3px;
+}
+.dbm-copy-controls {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.dbm-copy-controls > select {
+  font-size: 9px;
+  padding: 6px 20px 6px 7px;
+  max-width: 190px;
+  background: var(--surface);
+}
+.dbm-copy-controls > label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9px;
+  color: var(--muted);
+  margin-right: 5px;
+}
+.dbm-copy-controls input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+}
+.dbm-readonly-notice {
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--bg);
+  padding: 9px 15px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.dbm-workspace-message {
+  padding: 9px 15px;
+  color: var(--teal);
+  font-size: 11px;
+  background: #3e9a8410;
+  border-bottom: 1px solid var(--border-soft);
+}
+.dbm-data-content {
+  position: relative;
+  min-height: 280px;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+.dbm-table-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--accent);
+}
+.dbm-table-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--muted);
+  min-height: 44px;
+  flex-wrap: wrap;
+}
+.dbm-table-footer .button {
+  font-size: 10px;
+  min-height: 29px;
+  padding: 6px 8px;
+}
+.dbm-pending-badge {
+  color: var(--warning);
+  font-size: 10px;
+  background: #b58c2814;
+  border: 1px solid #c59d453a;
+  border-radius: 4px;
+  padding: 4px 6px;
+  white-space: nowrap;
+}
+.dbm-grid-wrap {
+  min-height: 250px;
+}
+.dbm-grid.data-grid {
+  min-height: 260px;
+  max-height: 65vh;
+  outline-offset: -3px;
+}
+.table-data-workspace .dbm-grid.data-grid {
+  min-height: 330px;
+}
+.dbm-grid.data-grid th {
+  position: relative;
+  overflow: visible;
+  padding-left: 10px;
+  padding-right: 12px;
+}
+.dbm-grid.data-grid .column-heading:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.dbm-grid.data-grid td.dbm-data-cell {
+  position: relative;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  min-height: 37px;
+  cursor: cell;
+  outline-offset: -2px;
+}
+.dbm-grid.data-grid td.dbm-editable-cell {
+  cursor: text;
+}
+.dbm-grid.data-grid td.dbm-data-cell:hover {
+  background: #729fea0b;
+}
+.dbm-grid.data-grid td.dbm-active-cell {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.dbm-grid.data-grid td.dbm-editing-cell {
+  overflow: visible;
+  z-index: 12;
+}
+.dbm-grid.data-grid td > .dbm-cell-display {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  width: 100%;
+  height: 36px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.dbm-cell-display > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.dbm-cell-display > svg {
+  color: var(--subtle);
+  opacity: 0;
+  flex-shrink: 0;
+}
+.dbm-grid td:hover .dbm-cell-display > svg,
+.dbm-grid .dbm-active-cell .dbm-cell-display > svg {
+  opacity: 0.8;
+}
+.dbm-null-value {
+  color: var(--subtle);
+  font-style: italic;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+}
+.dbm-empty-value {
+  color: var(--subtle);
+  font-size: 10px;
+  font-style: italic;
+}
+.dbm-grid.data-grid td.dbm-control-cell {
+  display: flex;
+  align-items: center;
+  padding: 0 9px;
+}
+.dbm-row-selector {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 10px;
+  color: var(--muted);
+  width: 100%;
+  min-height: 28px;
+}
+.dbm-row-selector input {
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  margin: 0;
+}
+.dbm-row-selector .row-number {
+  min-width: 22px;
+  line-height: 20px;
+  border: 0;
+  background: none;
+  padding: 0;
+  font-size: 10px;
+  color: var(--muted);
+}
+.dbm-row-selector .row-number:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.dbm-grid.data-grid .dbm-row-selected td {
+  box-shadow:
+    inset 0 1px 0 #5e98ed29,
+    inset 0 -1px 0 #5e98ed29;
+  background: #649ce912;
+}
+.dbm-grid.data-grid .dbm-row-selected td.dbm-active-cell {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  background: var(--accent-soft);
+}
+.dbm-column-resizer {
+  position: absolute;
+  right: -3px;
+  top: 0;
+  width: 7px;
+  bottom: 0;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 5;
+  border-right: 2px solid transparent;
+  user-select: none;
+}
+.dbm-column-resizer:hover,
+.dbm-column-resizer.resizing,
+.dbm-column-resizer:focus-visible {
+  border-color: var(--accent);
+  background: #598cda30;
+  outline: none;
+}
+.dbm-cell-editor {
+  position: absolute;
+  left: -1px;
+  top: -1px;
+  z-index: 25;
+  min-width: 245px;
+  width: max(245px, 100%);
+  padding: 7px;
+  background: var(--surface-raised);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  box-shadow: 0 8px 25px #0004;
+  cursor: default;
+}
+.dbm-cell-editor textarea {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  min-height: 44px;
+  max-height: 240px;
+  padding: 6px 7px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.dbm-cell-editor textarea:disabled {
+  opacity: 0.5;
+}
+.dbm-cell-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-top: 6px;
+}
+.dbm-cell-editor-actions > label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font:
+    10px "Segoe UI",
+    sans-serif;
+  cursor: pointer;
+}
+.dbm-cell-editor-actions input {
+  height: 12px;
+  width: 12px;
+  margin: 0;
+  padding: 0;
+}
+.dbm-cell-editor-actions > span {
+  flex: 1;
+}
+.dbm-cell-editor-actions > button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 23px;
+  width: 25px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  border-radius: 3px;
+}
+.dbm-cell-editor-actions > button:first-of-type {
+  color: var(--teal);
+}
+.dbm-cell-editor-error {
+  font-family: "Segoe UI", sans-serif;
+  font-size: 10px;
+  color: var(--danger);
+  white-space: normal;
+  line-height: 1.5;
+  margin-top: 7px;
+}
+.dbm-grid-error {
+  padding: 9px 13px;
+  color: var(--danger);
+  background: #b74a5510;
+  border-bottom: 1px solid #c4616a36;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.dbm-grid-cell-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 35px;
+  padding: 5px 10px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 10px;
+  color: var(--muted);
+}
+.dbm-grid-cell-toolbar > span {
+  flex: 1;
+}
+.dbm-grid-cell-toolbar > button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 9px;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+.dbm-grid-cell-toolbar kbd {
+  font-size: 8px;
+  color: var(--subtle);
+  margin-left: 4px;
+}
+.dbm-record-view {
+  padding: 0 18px 20px;
+  min-height: 330px;
+  overflow: auto;
+}
+.dbm-record-navigation {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 55px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 18px;
+}
+.dbm-record-navigation strong {
+  font-size: 11px;
+}
+.dbm-record-navigation .button {
+  font-size: 10px;
+  min-height: 28px;
+  padding: 5px 8px;
+}
+.dbm-record-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin: 0;
+}
+.dbm-record-details > div {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  padding: 12px;
+  min-width: 0;
+}
+.dbm-record-details dt {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.dbm-record-details dt > small {
+  display: block;
+  margin-top: 5px;
+  font-size: 9px;
+  color: var(--subtle);
+  font-weight: 400;
+}
+.dbm-record-details dd {
+  margin: 0;
+  min-height: 22px;
+  overflow: auto;
+}
+.dbm-record-details pre,
+.dbm-paste-preview pre {
+  margin: 0;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+}
+.dbm-json-view > label {
+  font-size: 11px;
+  margin-bottom: 15px;
+}
+.dbm-json-view > pre {
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow: auto;
+  max-height: 65vh;
+}
+.dbm-json-view > p {
+  color: var(--subtle);
+  font-size: 10px;
+  margin-top: 12px;
+}
+.dbm-paste-summary {
+  display: flex;
+  align-items: center;
+  gap: 17px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.dbm-paste-summary strong {
+  color: var(--text);
+}
+.dbm-paste-preview {
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.dbm-paste-preview .plain-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-raised);
+  z-index: 2;
+}
+.dbm-paste-preview small {
+  display: block;
+  font-size: 9px;
+  margin-top: 3px;
+}
+.dbm-paste-preview > p {
+  padding: 12px;
+  font-size: 10px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+}
+.dbm-paste-preview .plain-table td {
+  vertical-align: top;
+  max-width: 240px;
+}
+.dbm-paste-preview pre {
+  max-height: 130px;
+  font-size: 10px;
+}
+.dbm-paste-preview .dbm-null-value {
+  display: inline-block;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+@media (max-width: 1100px) {
+  .dbm-table-toolbar > .spacer {
+    display: none;
+  }
+  .dbm-copy-controls {
+    margin-left: auto;
+  }
+  .dbm-record-details {
+    grid-template-columns: 1fr;
+  }
+  .dbm-table-footer > .spacer {
+    display: none;
+  }
+  .dbm-table-heading h2 {
+    font-size: 12px;
+  }
+  .dbm-table-heading p {
+    font-size: 9px;
+  }
+  .dbm-editability {
+    font-size: 9px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dbm-grid-wrap *,
+  .table-data-workspace * {
+    scroll-behavior: auto !important;
+  }
+}

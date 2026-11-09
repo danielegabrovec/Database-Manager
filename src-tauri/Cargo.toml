@@ -1,0 +1,62 @@
+[package]
+name = "database-manager"
+version = "0.2.1"
+description = "Ambiente database, laboratorio e generatore di codice"
+edition = "2021"
+authors = ["Daniele Gabrovec"]
+license-file = "../LICENSE"
+repository = "https://github.com/danielegabrovec/Database-Manager"
+default-run = "database-manager"
+
+[lib]
+name = "dbmanager_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog", "dep:tauri-plugin-opener", "dep:tauri-plugin-single-instance"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [], optional = true }
+
+[dependencies]
+tauri = { version = "2", features = [], optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-opener = { version = "2", optional = true }
+tauri-plugin-single-instance = { version = "2", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.37", features = ["bundled", "hooks", "backup", "column_decltype", "limits"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1", "with-chrono-0_4", "with-uuid-1"] }
+postgres-native-tls = "0.5"
+native-tls = "0.2"
+mysql_async = { version = "0.36", default-features = false, features = ["minimal-rust", "rustls-tls", "tls12"] }
+mongodb = "3.10"
+futures-util = "0.3"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+csv = "1"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+keyring = { version = "3", features = ["windows-native"] }
+base64 = "0.22"
+bytes = "1"
+hex = "0.4"
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+url = "2"
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_System_Services", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Memory", "Win32_System_Registry"] }
+
+[[bin]]
+name = "database-manager"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "dbmanager-bridge"
+path = "src/bin/bridge.rs"

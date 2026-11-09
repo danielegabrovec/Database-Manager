@@ -1,0 +1,43 @@
+DATABASE MANAGER — LICENZA DEL PROGETTO
+
+Copyright (c) 2026 Daniele Gabrovec. Tutti i diritti riservati.
+
+1. Titolarità e ambito
+Daniele Gabrovec è il titolare del progetto Database Manager e del relativo
+codice originale. Questa dichiarazione non si estende a componenti, marchi,
+documentazione o altri materiali di terzi, che conservano le rispettive
+titolarità e licenze. Vedere THIRD-PARTY-NOTICES.md e la cartella licenses/.
+
+2. Uso degli eseguibili ufficiali
+È consentito scaricare ed eseguire gratuitamente le distribuzioni ufficiali
+di Database Manager per uso personale, didattico e professionale. Questa
+autorizzazione è non esclusiva e non trasferisce la proprietà del software.
+
+3. Codice sorgente e redistribuzione
+La disponibilità pubblica dei sorgenti non costituisce una licenza open source.
+Non è concessa un'autorizzazione generale a modificare, redistribuire,
+sublicenziare o commercializzare il codice originale del progetto o copie
+del programma. Restano salvi i diritti previsti dalla legge, le licenze dei
+componenti di terzi e i diritti di visualizzazione e fork all'interno di GitHub
+previsti dalle condizioni del servizio. Ulteriori autorizzazioni possono essere
+richieste al titolare tramite il repository ufficiale.
+
+4. Codice prodotto dal generatore
+Per le parti originali di codice che Database Manager genera come output su
+richiesta dell'utente, è concesso un permesso gratuito, non esclusivo e senza
+limiti di durata di usare, copiare, modificare e distribuire tale output,
+anche in prodotti commerciali, senza obbligo di attribuzione a Database Manager.
+Questa concessione riguarda l'output del generatore, non il codice del programma.
+Le librerie, i runtime e le altre dipendenze utilizzati dall'output mantengono
+le proprie licenze e condizioni; l'utente deve verificarle per il suo progetto.
+
+5. Garanzie e responsabilità
+Il software è fornito nello stato in cui si trova. Nei limiti consentiti dalla
+legge applicabile non sono offerte garanzie di idoneità, assenza di errori o
+continuità del servizio. L'utente deve verificare query, script, codice generato
+e copie di sicurezza prima di usarli sui propri sistemi. Nessuna disposizione
+esclude o limita diritti inderogabili o responsabilità che non possano essere
+escluse o limitate dalla legge applicabile.
+
+Repository ufficiale: https://github.com/danielegabrovec/Database-Manager
+Versione della licenza: 9 novembre 2026.

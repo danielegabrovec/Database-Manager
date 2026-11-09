@@ -1,0 +1,4 @@
+# Preserve the exact upstream legal texts and their recorded hashes.
+licenses/** -text
+*.png binary
+*.ico binary

@@ -1,0 +1,170 @@
+.designer-project-bar {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+.designer-project-bar .field {
+  min-width: 210px;
+}
+.designer-steps {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.designer-steps button {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.designer-steps button.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.designer-columns-layout {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: 16px;
+}
+.designer-table-choice {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+.designer-table-choice small {
+  margin-left: auto;
+  color: var(--muted);
+}
+.designer-table-choice.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.schema-fields-scroll {
+  overflow: auto;
+}
+.schema-fields {
+  min-width: 850px;
+  width: 100%;
+  border-collapse: collapse;
+}
+.schema-fields th {
+  text-align: left;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 10px 7px;
+}
+.schema-fields td {
+  border-top: 1px solid var(--border);
+  padding: 8px 6px;
+}
+.schema-fields input:not([type="checkbox"]) {
+  min-width: 90px;
+  width: 100%;
+}
+.schema-fields td:first-child input {
+  min-width: 140px;
+}
+.schema-fields td:nth-child(2) input {
+  min-width: 150px;
+}
+.schema-fields input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+.designer-sql {
+  height: 330px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.designer-graph {
+  height: 510px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.design-graph-table {
+  width: 260px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 12px;
+}
+.design-graph-table.origin {
+  border-color: var(--accent);
+}
+.design-graph-table strong {
+  display: block;
+  padding: 13px;
+  background: var(--surface-2);
+}
+.design-graph-table > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 17px;
+  border-top: 1px solid var(--border);
+  position: relative;
+}
+.design-graph-table small {
+  color: var(--muted);
+}
+.designer-workbench .codegen-layout {
+  grid-template-columns: 280px minmax(0, 1fr);
+}
+.designer-workbench .view-content {
+  padding: 0;
+}
+.designer-workbench .view-content > .section-header {
+  display: none;
+}
+@media (max-width: 1150px) {
+  .designer-columns-layout {
+    grid-template-columns: 1fr;
+  }
+  .designer-columns-layout > aside {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .designer-columns-layout > aside .field {
+    width: 100%;
+  }
+}
+
+.design-graph-table {
+  overflow: visible;
+}
+.design-graph-table strong {
+  border-radius: 8px 8px 0 0;
+}
+.design-graph-table .react-flow__handle {
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  background: var(--accent);
+  border: 2px solid var(--surface);
+  z-index: 5;
+}
+.design-graph-table .react-flow__handle:focus {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}

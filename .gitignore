@@ -1,0 +1,32 @@
+node_modules/
+dist/
+src-tauri/target/
+*.log
+.env
+.env.*
+!.env.example
+artifacts/
+test-results/
+.dbmanager/
+
+# Distribuzioni pubblicate come asset delle release, non nella cronologia Git
+/releases/
+*.tsbuildinfo
+/src-tauri/gen/
+# Cache, runtime e dati generati dal collaudo
+/tests/codegen/toolchains/
+/tests/codegen/generated/
+/tests/codegen/target/
+/tests/codegen/native-qa/
+/tests/codegen/runtime/
+/tests/codegen/databases/
+**/__pycache__/
+*.pyc
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.pem
+*.key
+*.pfx
+*.p12

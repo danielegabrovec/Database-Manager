@@ -1,0 +1,6 @@
+Package: selectors 0.38.0
+Declared license: MPL-2.0
+Upstream authors: The Servo Project Developers
+Source: https://crates.io/api/v1/crates/selectors/0.38.0/download
+
+

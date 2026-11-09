@@ -1,0 +1,140 @@
+.code-workbench-settings {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 14px;
+  background: var(--surface);
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  margin-bottom: 18px;
+}
+.operation-code-layout {
+  display: grid;
+  grid-template-columns: minmax(330px, 430px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.operation-builder {
+  max-height: calc(100vh - 220px);
+  overflow: auto;
+}
+.operation-builder h2,
+.code-output-heading h2 {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  font-size: 15px;
+  margin: 0;
+}
+.code-field-checks {
+  display: grid;
+  grid-template-columns: 1fr;
+  max-height: 185px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  padding: 9px;
+  border-radius: 6px;
+  gap: 7px;
+}
+.code-field-checks .check {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+}
+.code-field-checks small {
+  color: var(--muted);
+  margin-left: auto;
+  font-size: 10px;
+}
+.operation-filter {
+  display: grid;
+  grid-template-columns: 1fr 85px 1fr 25px;
+  gap: 6px;
+}
+.operation-filter input,
+.operation-filter select {
+  min-width: 0;
+  padding: 8px;
+}
+.operation-sql-preview {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  padding: 12px;
+  border-radius: 7px;
+}
+.operation-sql-preview small {
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+.operation-sql-preview pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.7;
+  max-height: 240px;
+  overflow: auto;
+  margin: 10px 0 0;
+  color: var(--text);
+}
+.code-output-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 15px;
+  border-bottom: 1px solid var(--border);
+}
+.code-workbench .generated-editor {
+  height: 450px;
+  min-height: 350px;
+}
+.code-workbench .generated-panel {
+  position: sticky;
+  top: 0;
+  overflow: hidden;
+}
+.code-workbench details pre {
+  font-size: 11px;
+  max-height: 180px;
+  overflow: auto;
+}
+.code-workbench .generator-notes {
+  max-height: 160px;
+  overflow: auto;
+}
+@media (max-width: 1150px) {
+  .operation-code-layout {
+    grid-template-columns: 1fr;
+  }
+  .operation-builder {
+    max-height: none;
+  }
+  .code-workbench-settings {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .code-workbench .generated-panel {
+    position: static;
+  }
+}
+
+.operation-builder > * {
+  flex-shrink: 0;
+}
+.code-field-checks {
+  flex: none;
+  min-height: 60px;
+}
+.code-workbench .generated-editor {
+  height: 450px;
+  min-height: 450px;
+  max-height: 450px;
+  flex: none;
+}
+.code-workbench .generated-panel {
+  height: auto;
+  min-height: 600px;
+}
+.code-workbench .generated-editor > section {
+  min-height: 450px !important;
+  height: 450px !important;
+}
