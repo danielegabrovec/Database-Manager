@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import Editor from "@monaco-editor/react";
 import {
   ReactFlow,
@@ -23,7 +24,7 @@ import {
 } from "lucide-react";
 import type { Engine, SchemaSnapshot, Mode, TableInfo } from "../types";
 import { ENGINE_LABELS, ENGINES } from "../types";
-import { Button, Field, Notice, SectionHeader } from "../components/UI";
+import { Button, Field, Modal, Notice, SectionHeader } from "../components/UI";
 import { DesignerExtras, INITIAL_DESIGNER } from "../components/SchemaBuilders";
 import { CodegenView } from "./CodegenView";
 import {
@@ -37,6 +38,11 @@ import {
   type DesignTable,
 } from "../designer/schemaProject";
 import { errorMessage } from "../utils";
+import { useConfirmation } from "../components/ConfirmationProvider";
+import {
+  buildMigrationPlan,
+  editExistingTable,
+} from "../designer/schemaMigration";
 import "../designer.css";
 
 function DesignNode({
@@ -78,13 +84,36 @@ function DesignNode({
   );
 }
 const NODE_TYPES = { design: DesignNode };
+function DiagramContainer({
+  expanded,
+  onClose,
+  children,
+}: {
+  expanded: boolean;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return expanded ? (
+    <Modal title="Relazioni del database" fullScreen onClose={onClose}>
+      <div className="designer-expanded-canvas">{children}</div>
+    </Modal>
+  ) : (
+    <>{children}</>
+  );
+}
 function loadSavedDesign() {
   try {
     const p = JSON.parse(
       localStorage.getItem("dbm-schema-design-v2") || "null",
     );
-    if (p?.tables?.length && ENGINES.includes(p.engine))
+    if (
+      p?.tables?.length &&
+      p.tables.length <= 100 &&
+      ENGINES.includes(p.engine)
+    ) {
+      buildProjectDdl(p.engine, p.tables);
       return p as { engine: Engine; tables: DesignTable[] };
+    }
   } catch {}
   return null;
 }
@@ -105,10 +134,16 @@ export function TableDesignerView({
   dark: boolean;
   connected: boolean;
   readOnly: boolean;
-  onApply: (script: string, engine: Engine) => Promise<SchemaSnapshot>;
+  onApply: (
+    script: string,
+    engine: Engine,
+    expectedSchema?: SchemaSnapshot | null,
+    rebuildSqlite?: boolean,
+  ) => Promise<SchemaSnapshot>;
   onOpenQuery: (query: string) => void;
   onCreated?: (table: TableInfo) => void;
 }) {
+  const confirm = useConfirmation();
   const [projectEngine, setProjectEngine] = useState<Engine>(
     () => loadSavedDesign()?.engine || engine,
   );
@@ -117,18 +152,28 @@ export function TableDesignerView({
   );
   const [selected, setSelected] = useState(tables[0]?.id || "");
   const [tab, setTab] = useState("structure");
-  const [sqlScope, setSqlScope] = useState<"pending" | "project">("pending");
+  const [sqlScope, setSqlScope] = useState<"pending" | "project" | "changes">(
+    "pending",
+  );
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [reviewed, setReviewed] = useState(false);
+  const [allowDestructive, setAllowDestructive] = useState(false);
+  const [graphExpanded, setGraphExpanded] = useState(false);
   const [currentSchema, setCurrentSchema] = useState(schema);
   useEffect(() => setCurrentSchema(schema), [schema]);
   useEffect(() => {
-    localStorage.setItem(
-      "dbm-schema-design-v2",
-      JSON.stringify({ engine: projectEngine, tables }),
-    );
+    try {
+      localStorage.setItem(
+        "dbm-schema-design-v2",
+        JSON.stringify({ engine: projectEngine, tables }),
+      );
+    } catch {
+      setError(
+        "Impossibile conservare automaticamente il progetto. Usa Salva progetto per esportare la bozza.",
+      );
+    }
     setReviewed(false);
   }, [tables, projectEngine]);
   const table = tables.find((t) => t.id === selected) || tables[0];
@@ -190,7 +235,11 @@ export function TableDesignerView({
   const creation = useMemo(() => {
     try {
       return {
-        ...buildCreationPlan(projectEngine, tables, currentSchema),
+        ...buildCreationPlan(
+          projectEngine,
+          tables.filter((table) => !table.source),
+          currentSchema,
+        ),
         error: "",
       };
     } catch (e) {
@@ -202,14 +251,40 @@ export function TableDesignerView({
     }
   }, [projectEngine, tables, currentSchema]);
   const { pendingTables } = creation;
-  const displayedSql = sqlScope === "project" ? built.sql : creation.sql;
-  const scriptError = built.error || creation.error;
+  const migration = useMemo(() => {
+    try {
+      return buildMigrationPlan(projectEngine, tables, currentSchema);
+    } catch (error) {
+      return {
+        changes: [],
+        blockers: [errorMessage(error)],
+        warnings: [],
+        sql: "",
+        rebuildSqlite: false,
+      };
+    }
+  }, [projectEngine, tables, currentSchema]);
+  const displayedSql =
+    sqlScope === "changes"
+      ? migration.sql
+      : sqlScope === "project"
+        ? built.sql
+        : creation.sql;
+  const scriptError =
+    built.error ||
+    (sqlScope === "changes" ? migration.blockers.join(" ") : creation.error);
+  const applyingMigration = sqlScope === "changes";
+  const destructive =
+    applyingMigration && migration.changes.some((change) => change.destructive);
+  const hasChanges = applyingMigration
+    ? !!migration.changes.length
+    : !!pendingTables.length;
   const conflicts =
     sqlScope === "project" && pendingTables.length !== tables.length;
-  useEffect(
-    () => setReviewed(false),
-    [displayedSql, currentSchema, connected, readOnly, engine],
-  );
+  useEffect(() => {
+    setReviewed(false);
+    setAllowDestructive(false);
+  }, [displayedSql, currentSchema, connected, readOnly, engine]);
   const currentRelations = (
     currentSchema?.engine === projectEngine ? currentSchema.tables : []
   ).filter(
@@ -229,6 +304,53 @@ export function TableDesignerView({
       (t) => t.columns.length && !tables.some((p) => p.name === t.name),
     ),
   ];
+  function editTable(source: TableInfo) {
+    try {
+      const existing = tables.find(
+        (t) => t.source?.name === source.name || t.name === source.name,
+      );
+      if (existing) {
+        setSelected(existing.id);
+        setTab("structure");
+        return;
+      }
+      const draft = editExistingTable(source);
+      setTables((old) => [...old, draft]);
+      setSelected(draft.id);
+      setTab("structure");
+      setSqlScope("changes");
+      setError("");
+      setMessage(
+        "Struttura esistente nel progetto. Le modifiche saranno applicate solo dopo la revisione del piano.",
+      );
+    } catch (error) {
+      setError(errorMessage(error));
+    }
+  }
+  async function loadExistingSchema() {
+    if (
+      !(await confirm(
+        "Caricare le tabelle del database nel progetto visuale? Il progetto corrente verrà sostituito: usa Salva progetto se vuoi conservarne una copia.",
+      ))
+    )
+      return;
+    try {
+      const loaded = currentRelations
+        .filter((t) => /^(table|collection|partitioned table)$/i.test(t.kind))
+        .map(editExistingTable);
+      if (!loaded.length)
+        throw new Error("Non ci sono tabelle modificabili da caricare.");
+      setTables(loaded);
+      setSelected(loaded[0].id);
+      setSqlScope("changes");
+      setError("");
+      setMessage(
+        "Schema caricato dal database: modifica campi o relazioni e rivedi il piano prima di applicarlo.",
+      );
+    } catch (error) {
+      setError(errorMessage(error));
+    }
+  }
   const graph = useMemo(() => {
     const nodes = sourceTables.map((t, i) => ({
       id: t.name,
@@ -296,17 +418,45 @@ export function TableDesignerView({
       readOnly ||
       projectEngine !== engine ||
       conflicts ||
-      !pendingTables.length ||
+      !hasChanges ||
+      (destructive && !allowDestructive) ||
       busy
     )
       return;
     setBusy(true);
     setError("");
     try {
-      const next = await onApply(displayedSql, projectEngine);
+      const next = await onApply(
+        displayedSql,
+        projectEngine,
+        currentSchema,
+        applyingMigration && migration.rebuildSqlite,
+      );
       setCurrentSchema(next);
+      setTables((old) =>
+        old.map((draft) => {
+          const actual = next.tables.find(
+            (t) =>
+              t.name === draft.name &&
+              (!t.schema ||
+                t.schema === "public" ||
+                t.schema === "main" ||
+                t.schema === next.database),
+          );
+          if (!actual) return draft;
+          try {
+            return {
+              ...editExistingTable(actual),
+              id: draft.id,
+              position: draft.position,
+            };
+          } catch {
+            return draft;
+          }
+        }),
+      );
       setMessage(
-        "Strutture create nel database. Puoi aprire i dati o generare il codice.",
+        "Piano applicato e schema riletto dal database. Puoi aprire i dati o generare il codice.",
       );
       setReviewed(false);
     } catch (e) {
@@ -376,7 +526,7 @@ export function TableDesignerView({
     URL.revokeObjectURL(a.href);
   }
   return (
-    <div className="view-content designer-workbench">
+    <div className={`view-content designer-workbench designer-tab-${tab}`}>
       <SectionHeader
         eyebrow="DAL DISEGNO AL DATABASE E AL CODICE"
         title="Designer database"
@@ -413,6 +563,14 @@ export function TableDesignerView({
         <Button onClick={saveProject}>
           <Download size={15} />
           Salva progetto
+        </Button>
+        <Button
+          disabled={
+            !currentSchema || projectEngine !== currentSchema.engine || busy
+          }
+          onClick={() => void loadExistingSchema()}
+        >
+          <Database size={15} /> Carica schema esistente
         </Button>
         <label className="button secondary">
           <FolderOpen size={15} />
@@ -472,6 +630,29 @@ export function TableDesignerView({
             ))}
             {currentRelations.filter((t) => t.columns.length > 0).length >
               0 && (
+              <Field label="Modifica una struttura esistente">
+                <select
+                  value=""
+                  onChange={(event) => {
+                    const source = currentRelations.find(
+                      (t) => t.name === event.target.value,
+                    );
+                    if (source) editTable(source);
+                  }}
+                >
+                  <option value="">Scegli una tabella da modificare</option>
+                  {currentRelations
+                    .filter((t) =>
+                      /^(table|collection|partitioned table)$/i.test(t.kind),
+                    )
+                    .map((t) => (
+                      <option key={t.name}>{t.name}</option>
+                    ))}
+                </select>
+              </Field>
+            )}
+            {currentRelations.filter((t) => t.columns.length > 0).length >
+              0 && (
               <Field label="Copia una struttura esistente">
                 <select
                   value=""
@@ -507,6 +688,14 @@ export function TableDesignerView({
             </p>
           </aside>
           <section className="panel stack">
+            {table.source && (
+              <Notice>
+                Modifica di <strong>{table.source.name}</strong> nel database
+                esistente. Rimozioni e conversioni compaiono nel piano di
+                migrazione; rimuovere una tabella dal progetto non elimina il
+                database.
+              </Notice>
+            )}
             <div className="row">
               <Field
                 label={
@@ -769,27 +958,72 @@ export function TableDesignerView({
               ? "In MongoDB questi collegamenti documentano relazioni logiche: non vengono creati vincoli di chiave esterna."
               : "Le relazioni aggiungono chiavi esterne allo script."}
           </p>
-          <div className="designer-graph">
-            <ReactFlow
-              nodes={graph.nodes}
-              edges={graph.edges}
-              nodeTypes={NODE_TYPES}
-              connectOnClick
-              onConnect={connectRelation}
-              onNodeDragStop={(_, node) =>
-                setTables((old) =>
-                  old.map((t) =>
-                    t.name === node.id ? { ...t, position: node.position } : t,
-                  ),
-                )
-              }
-              fitView
-              proOptions={{ hideAttribution: true }}
-            >
-              <Background />
-              <Controls />
-            </ReactFlow>
+          <div className="row">
+            <Button onClick={() => setGraphExpanded(true)}>
+              Espandi diagramma
+            </Button>
+            <span className="muted small">
+              Trascina per collegare · doppio clic sulla linea per rimuoverla
+              dal progetto
+            </span>
           </div>
+          <DiagramContainer
+            expanded={graphExpanded}
+            onClose={() => setGraphExpanded(false)}
+          >
+            <div className="designer-graph">
+              <ReactFlow
+                nodes={graph.nodes}
+                edges={graph.edges}
+                nodeTypes={NODE_TYPES}
+                connectOnClick
+                onNodeClick={(_, node) => {
+                  const draft = tables.find((t) => t.name === node.id);
+                  if (draft) setSelected(draft.id);
+                  else {
+                    const source = currentRelations.find(
+                      (t) => t.name === node.id,
+                    );
+                    if (source) editTable(source);
+                  }
+                }}
+                onEdgeDoubleClick={async (_, edge) => {
+                  if (
+                    !(await confirm(
+                      "Rimuovere questa relazione dal progetto? Rivedi poi il piano per applicare la modifica al database.",
+                    ))
+                  )
+                    return;
+                  setTables((old) =>
+                    old.map((t) => ({
+                      ...t,
+                      options: {
+                        ...t.options,
+                        keys: t.options.keys.filter(
+                          (_, index) => `${t.id}-${index}` !== edge.id,
+                        ),
+                      },
+                    })),
+                  );
+                }}
+                onConnect={connectRelation}
+                onNodeDragStop={(_, node) =>
+                  setTables((old) =>
+                    old.map((t) =>
+                      t.name === node.id
+                        ? { ...t, position: node.position }
+                        : t,
+                    ),
+                  )
+                }
+                fitView
+                proOptions={{ hideAttribution: true }}
+              >
+                <Background />
+                <Controls />
+              </ReactFlow>
+            </div>
+          </DiagramContainer>
           <Button onClick={() => setTab("sql")}>
             Controlla lo script generato
             <ArrowRight size={14} />
@@ -804,12 +1038,17 @@ export function TableDesignerView({
               aria-label="Ambito dello script"
               value={sqlScope}
               onChange={(e) => {
-                setSqlScope(e.target.value as "pending" | "project");
+                setSqlScope(
+                  e.target.value as "pending" | "project" | "changes",
+                );
                 setReviewed(false);
               }}
             >
               <option value="pending">
                 Solo strutture mancanti ({pendingTables.length})
+              </option>
+              <option value="changes">
+                Modifiche al database ({migration.changes.length})
               </option>
               <option value="project">
                 Progetto completo ({tables.length})
@@ -828,6 +1067,32 @@ export function TableDesignerView({
               <ArrowRight size={14} />
             </Button>
           </div>
+          {applyingMigration && (
+            <div className="migration-summary">
+              <h3>
+                {migration.changes.length
+                  ? "Operazioni del piano"
+                  : "Nessuna modifica strutturale da applicare"}
+              </h3>
+              {migration.changes.map((change, index) => (
+                <div
+                  key={index}
+                  className={change.destructive ? "migration-destructive" : ""}
+                >
+                  <span>{index + 1}</span>
+                  {change.label}
+                  {change.destructive && (
+                    <strong>Richiede revisione dei dati</strong>
+                  )}
+                </div>
+              ))}
+              {migration.warnings.map((warning) => (
+                <Notice key={warning} tone="warning">
+                  {warning}
+                </Notice>
+              ))}
+            </div>
+          )}
           <div className="designer-sql">
             <Editor
               height="330px"
@@ -858,12 +1123,11 @@ export function TableDesignerView({
               SQL o una migrazione.
             </Notice>
           )}
-          {pendingTables.length !== tables.length && (
+          {!applyingMigration && pendingTables.length !== tables.length && (
             <Notice>
               Le strutture già presenti non vengono ricreate o modificate
               automaticamente. Per la creazione scegli Solo strutture mancanti;
-              per modifiche esistenti prepara ALTER o una migrazione
-              nell’editor.
+              per modifiche esistenti scegli Modifiche al database.
             </Notice>
           )}
           <label className="check">
@@ -874,6 +1138,17 @@ export function TableDesignerView({
             />
             Ho controllato nomi, tipi, relazioni e destinazione dello script.
           </label>
+          {destructive && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={allowDestructive}
+                onChange={(event) => setAllowDestructive(event.target.checked)}
+              />
+              Ho un backup verificato e accetto rimozioni, ricostruzioni o
+              conversioni indicate nel piano.
+            </label>
+          )}
           <div className="row">
             <Button
               variant="primary"
@@ -884,14 +1159,17 @@ export function TableDesignerView({
                 readOnly ||
                 projectEngine !== engine ||
                 !reviewed ||
-                !pendingTables.length ||
+                !hasChanges ||
+                (destructive && !allowDestructive) ||
                 conflicts
               }
               busy={busy}
               onClick={apply}
             >
               <Database size={15} />
-              Crea nel database
+              {applyingMigration
+                ? "Applica modifiche al database"
+                : "Crea nel database"}
             </Button>
             <Button onClick={() => setTab("code")} disabled={!built.schema}>
               <Code2 size={15} />

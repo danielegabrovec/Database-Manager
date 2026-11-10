@@ -32,6 +32,8 @@ const ARTIFACTS = [
   ["function", "Funzione parametrizzata"],
   ["model", "Modello / classe / DTO"],
   ["repository", "Repository di lettura"],
+  ["writes", "Funzioni CRUD da integrare"],
+  ["schema", "Funzione di creazione schema"],
   ["project", "Programma completo CRUD"],
   ["rest", "API REST CRUD"],
   ["script", "Script SQL / MongoDB"],
@@ -231,22 +233,33 @@ export function CodegenView({
           request: {
             engine: selectedEngine,
             language: languageId,
-            artifact,
+            artifact: artifact === "writes" ? "function" : artifact,
             operation:
-              options.operation === "findByKey"
-                ? "findByKey"
-                : options.operation === "custom"
-                  ? "custom"
-                  : "select",
+              artifact === "writes"
+                ? ["insert", "update", "delete"].includes(options.operation)
+                  ? options.operation
+                  : "insert"
+                : options.operation === "findByKey"
+                  ? "findByKey"
+                  : options.operation === "custom"
+                    ? "custom"
+                    : "select",
             table: activeTable.name,
             tableSchema: activeTable.schema || null,
             columns:
-              artifact === "model" && options.columns.length
-                ? activeTable.columns.filter((c) =>
-                    options.columns.includes(c.name),
-                  )
-                : activeTable.columns,
-            query: isRead ? built.template || built.query : "",
+              artifact === "schema"
+                ? []
+                : artifact === "model" && options.columns.length
+                  ? activeTable.columns.filter((c) =>
+                      options.columns.includes(c.name),
+                    )
+                  : activeTable.columns,
+            query:
+              artifact === "schema"
+                ? schemaScript || activeTable.definition || ""
+                : isRead
+                  ? built.template || built.query
+                  : "",
             parameters: isRead ? built.parameters : [],
             educational,
           },
@@ -462,16 +475,60 @@ export function CodegenView({
               operazione.
             </Notice>
           )}
-          {activeTable && (
+          {artifact === "writes" && (
+            <>
+              <Field label="Operazione da integrare">
+                <select
+                  value={
+                    ["insert", "update", "delete"].includes(options.operation)
+                      ? options.operation
+                      : "insert"
+                  }
+                  onChange={(event) =>
+                    patch({ operation: event.target.value as OperationKind })
+                  }
+                >
+                  <option value="insert">Inserisci record</option>
+                  <option value="update">Modifica per chiave primaria</option>
+                  <option value="delete">Elimina per chiave primaria</option>
+                </select>
+              </Field>
+              <Notice>
+                Genera il modulo driver con la funzione execute e le operazioni
+                list, insert, update e delete. Per scrivere passa esplicitamente
+                l’operazione selezionata e un oggetto con i valori;
+                aggiornamenti e cancellazioni richiedono la chiave completa. Il
+                generatore non esegue operazioni.
+              </Notice>
+            </>
+          )}
+          {artifact === "schema" && (
+            <Notice>
+              Genera una funzione da chiamare con una connessione già aperta
+              nella tua applicazione e include lo schema SQL. Usa il designer
+              per definire più tabelle, indici e relazioni. Disponibile nei
+              dodici linguaggi per SQLite, PostgreSQL, MySQL e MariaDB; per
+              MongoDB esporta lo schema JSON.
+            </Notice>
+          )}
+          {activeTable && artifact !== "schema" && (
             <>
               <h3>
-                Campi {artifact === "model" ? "del modello" : "da leggere"}
+                Campi{" "}
+                {artifact === "model"
+                  ? "del modello"
+                  : artifact === "writes"
+                    ? "del payload CRUD"
+                    : "da leggere"}
               </h3>
               <div className="code-field-checks">
                 {activeTable.columns.map((c) => (
                   <label className="check" key={c.name}>
                     <input
                       type="checkbox"
+                      disabled={["writes", "project", "rest"].includes(
+                        artifact,
+                      )}
                       checked={
                         !options.columns.length ||
                         options.columns.includes(c.name)

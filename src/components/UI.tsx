@@ -1,6 +1,7 @@
 import { X, LoaderCircle, Info } from "lucide-react";
 import type { ReactNode, ButtonHTMLAttributes } from "react";
 import { useEffect, useRef } from "react";
+const modalStack: symbol[] = [];
 
 export function Button({
   children,
@@ -16,6 +17,7 @@ export function Button({
       {...props}
       className={`button ${variant} ${props.className || ""}`}
       disabled={props.disabled || busy}
+      aria-busy={busy || undefined}
     >
       {busy && <LoaderCircle size={15} className="spin" />}
       {children}
@@ -27,36 +29,55 @@ export function Modal({
   children,
   onClose,
   wide = false,
+  fullScreen = false,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
+  fullScreen?: boolean;
 }) {
   const element = useRef<HTMLElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
+    const token = Symbol("modal");
+    modalStack.push(token);
     const previous = document.activeElement as HTMLElement | null;
     const current = element.current;
     const focusable = () =>
       Array.from(
         current?.querySelectorAll<HTMLElement>(
-          'button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]',
+          'button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],summary,[tabindex="0"]',
         ) || [],
-      ).filter((item) => item.offsetParent !== null);
+      ).filter(
+        (item) =>
+          item.offsetParent !== null && !item.closest("[hidden], [inert]"),
+      );
     if (current && !current.contains(document.activeElement))
-      focusable()[0]?.focus();
+      (
+        current.querySelector<HTMLElement>("[data-autofocus], [autofocus]") ||
+        focusable()[0] ||
+        current
+      ).focus();
     const key = (event: KeyboardEvent) => {
+      if (modalStack.at(-1) !== token) return;
       if (event.key === "Escape") {
         event.preventDefault();
+        event.stopPropagation();
         closeRef.current();
       }
       if (event.key === "Tab") {
         const items = focusable();
         const first = items[0],
           last = items[items.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
+        if (!items.length) {
+          event.preventDefault();
+          current?.focus();
+        } else if (!current?.contains(document.activeElement)) {
+          event.preventDefault();
+          first?.focus();
+        } else if (event.shiftKey && document.activeElement === first) {
           event.preventDefault();
           last?.focus();
         } else if (!event.shiftKey && document.activeElement === last) {
@@ -65,10 +86,12 @@ export function Modal({
         }
       }
     };
-    document.addEventListener("keydown", key);
+    document.addEventListener("keydown", key, true);
     return () => {
-      document.removeEventListener("keydown", key);
-      previous?.focus();
+      const wasTop = modalStack.at(-1) === token;
+      modalStack.splice(modalStack.indexOf(token), 1);
+      document.removeEventListener("keydown", key, true);
+      if (wasTop && previous?.isConnected) previous.focus();
     };
   }, []);
   return (
@@ -80,10 +103,11 @@ export function Modal({
     >
       <section
         ref={element}
-        className={`modal ${wide ? "wide" : ""}`}
+        className={`modal ${wide ? "wide" : ""} ${fullScreen ? "full-screen" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        tabIndex={-1}
       >
         <header>
           <h2>{title}</h2>

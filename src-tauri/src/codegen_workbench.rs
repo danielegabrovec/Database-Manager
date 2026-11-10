@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 mod models;
 #[path = "codegen_workbench/reads.rs"]
 mod reads;
+mod schema_code;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -245,6 +246,7 @@ fn normalize(mut request: WorkbenchRequest) -> Result<WorkbenchRequest, String> 
         "project",
         "rest",
         "script",
+        "schema",
     ]
     .contains(&request.artifact.as_str())
     {
@@ -323,6 +325,7 @@ fn normalize(mut request: WorkbenchRequest) -> Result<WorkbenchRequest, String> 
 }
 pub fn generate_workbench(request: WorkbenchRequest) -> Result<GeneratedProject, String> {
     let mut request = normalize(request)?;
+    if request.artifact == "schema" { return schema_code::generate(&request); }
     if request.artifact == "model" {
         return models::generate(&request);
     }

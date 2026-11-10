@@ -1,5 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import Editor from "@monaco-editor/react";
+import packageMetadata from "../package.json";
+import { isTauri } from "@tauri-apps/api/core";
 import type { editor as MonacoEditor } from "monaco-editor";
 import {
   Activity,
@@ -15,12 +25,10 @@ import {
   Clock3,
   Code2,
   Database,
-  DatabaseBackup,
   Download,
   FileCode2,
   FlaskConical,
   FolderOpen,
-  GitFork,
   HelpCircle,
   History,
   Layers3,
@@ -67,11 +75,21 @@ import {
   updateChange,
 } from "./utils";
 import { Button, Empty, Field, Modal, Notice } from "./components/UI";
+import { useConfirmation } from "./components/ConfirmationProvider";
 import { ProfileDialog } from "./components/ProfileDialog";
 import { DataGrid } from "./components/DataGrid";
 import { TableDataWorkspace } from "./components/TableDataWorkspace";
 import { TableDesignerView } from "./views/TableDesignerView";
 import { QueryLibraryView } from "./views/QueryLibraryView";
+import { WorkspaceNavigation } from "./components/WorkspaceNavigation";
+import { NAV_FLAT as NAV, NAV_GROUPS } from "./navigation";
+import type { WorkspaceView as View } from "./navigation";
+import type { PowerShellPreviewDraft } from "./views/PowerShellCatalogView";
+const PowerShellCatalogView = lazy(() =>
+  import("./views/PowerShellCatalogView").then((module) => ({
+    default: module.PowerShellCatalogView,
+  })),
+);
 import { QueryElementsPanel } from "./components/QueryElementsPanel";
 import {
   installSqlLanguage,
@@ -81,9 +99,31 @@ import {
 } from "./editor/sqlLanguage";
 import type { LibraryEntry } from "./editor/queryCatalog";
 import "./workbench.css";
+import "./document-tabs.css";
+import { analyzeSqlScript } from "./files/sqlScriptAnalysis";
+import { QueryDocumentTabs } from "./components/QueryDocumentTabs";
+import { restoreFileRecovery, type FileRecovery } from "./files/fileRecovery";
+import { createSettingsWriter } from "./files/settingsWriter";
+import { selectRecoverySnapshot } from "./files/recoverySnapshot";
+import {
+  OpenFilesView,
+  type FileQueryOpenOptions,
+  type OpenedFileDatabase,
+  type GeneratedFileDraft,
+} from "./views/OpenFilesView";
+import { PathInput } from "./components/PathInput";
+import {
+  createQueryDocument,
+  restoreQueryWorkspace,
+  isQueryDocumentDirty,
+  sameDocumentPath,
+  checkDocumentCapacity,
+  type QueryDocument,
+} from "./files/queryDocuments";
 import { RecordDialog } from "./components/RecordDialog";
 import { CodegenView } from "./views/CodegenView";
 import { LabView } from "./views/LabView";
+import { GuideView } from "./views/GuideView";
 import { SchemaView } from "./views/SchemaView";
 import {
   AssistantPanel,
@@ -102,30 +142,12 @@ function readLocalDrafts(): Record<string, unknown> {
   }
 }
 const LOCAL_UI = readLocalDrafts();
-type View =
-  | "editor"
-  | "data"
-  | "designer"
-  | "library"
-  | "builder"
-  | "laboratory"
-  | "schema"
-  | "codegen"
-  | "transfer"
-  | "environments"
-  | "settings";
-const NAV = [
-  { id: "editor", label: "Editor SQL / MongoDB", icon: Terminal },
-  { id: "data", label: "Dati tabella", icon: Table2 },
-  { id: "designer", label: "Designer database", icon: Plus },
-  { id: "library", label: "Catalogo query", icon: BookOpen },
-  { id: "builder", label: "Compositore query", icon: Layers3 },
-  { id: "laboratory", label: "Laboratorio", icon: FlaskConical },
-  { id: "schema", label: "Struttura e relazioni", icon: GitFork },
-  { id: "codegen", label: "Generatore codice", icon: Braces },
-  { id: "transfer", label: "Import / Export", icon: DatabaseBackup },
-  { id: "environments", label: "Ambienti locali", icon: Layers3 },
-] as const;
+const RESTORED_WORKSPACE = restoreQueryWorkspace(LOCAL_UI.queryWorkspace);
+const INITIAL_DOCUMENTS = RESTORED_WORKSPACE?.documents || [
+  createQueryDocument(),
+];
+const INITIAL_DOCUMENT_ID =
+  RESTORED_WORKSPACE?.activeId || INITIAL_DOCUMENTS[0].id;
 const MODE_LABELS: Record<Mode, string> = {
   learning: "Apprendimento personale",
   work: "Studio e lavoro",
@@ -146,17 +168,151 @@ const EMPTY_BOOTSTRAP: Bootstrap = {
 };
 
 export default function App() {
+  const confirm = useConfirmation();
   const [boot, setBoot] = useState<Bootstrap>(EMPTY_BOOTSTRAP);
   const [initializing, setInitializing] = useState(true);
   const [bootError, setBootError] = useState("");
-  const [view, setView] = useState<View>("editor");
+  const [view, setViewState] = useState<View>(() =>
+    NAV.some((item) => item.id === LOCAL_UI.lastView)
+      ? (LOCAL_UI.lastView as View)
+      : "files",
+  );
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const navigationHistory = useRef<View[]>([]);
+  const navigationTouched = useRef(false);
+  const [historyLength, setHistoryLength] = useState(0);
+  const [powerShellMounted, setPowerShellMounted] = useState(
+    view === "powershell",
+  );
+  const [queryCatalogMounted, setQueryCatalogMounted] = useState(
+    view === "library",
+  );
+  const [generatedFileDraft, setGeneratedFileDraft] =
+    useState<GeneratedFileDraft>();
+  function setView(next: View) {
+    navigationTouched.current = true;
+    if (next === "powershell") setPowerShellMounted(true);
+    if (next === "library") setQueryCatalogMounted(true);
+    if (next === viewRef.current) return;
+    navigationHistory.current = [
+      ...navigationHistory.current,
+      viewRef.current,
+    ].slice(-30);
+    setHistoryLength(navigationHistory.current.length);
+    viewRef.current = next;
+    setViewState(next);
+  }
+  function goBack() {
+    const previous = navigationHistory.current.pop();
+    if (!previous) return;
+    setHistoryLength(navigationHistory.current.length);
+    viewRef.current = previous;
+    setViewState(previous);
+  }
+  function returnToCatalog(target: "library" | "powershell") {
+    if (navigationHistory.current.at(-1) === target) goBack();
+    else setView(target);
+  }
+  function previewPowerShell(input: PowerShellPreviewDraft) {
+    setGeneratedFileDraft({
+      ...input,
+      id: newId(),
+      originLabel: "Catalogo PowerShell",
+    });
+    setFilePath("");
+    setFileQueue([]);
+    setFilesMounted(true);
+    setView("files");
+  }
   const [mode, setMode] = useState<Mode>("work");
   const [theme, setTheme] = useState<Theme>("dark");
   const [dark, setDark] = useState(true);
   const [profileId, setProfileId] = useState("");
   const [sessionId, setSessionId] = useState("");
   const [schema, setSchema] = useState<SchemaSnapshot | null>(null);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(
+    INITIAL_DOCUMENTS.find((d) => d.id === INITIAL_DOCUMENT_ID)?.content || "",
+  );
+  const [documents, setDocuments] =
+    useState<QueryDocument[]>(INITIAL_DOCUMENTS);
+  const [activeDocumentId, setActiveDocumentId] = useState(INITIAL_DOCUMENT_ID);
+  const [filesMounted, setFilesMounted] = useState(true);
+  const [fileRecovery, setFileRecovery] = useState<FileRecovery | null>(() =>
+    restoreFileRecovery(LOCAL_UI.fileRecovery),
+  );
+  const [recoveryStatus, setRecoveryStatus] = useState<
+    "saving" | "saved" | "error"
+  >("saved");
+  const [recoveryError, setRecoveryError] = useState("");
+  const settingsWriter = useRef(
+    createSettingsWriter((settings) => api("update_settings", { settings })),
+  );
+  const pendingSettings = useRef<Record<string, unknown> | null>(null);
+  const savingSettings = useRef(false);
+  const localRecoveryError = useRef("");
+  const flushRecovery = useCallback(async () => {
+    if (!pendingSettings.current || savingSettings.current) return;
+    const settings = pendingSettings.current;
+    pendingSettings.current = null;
+    savingSettings.current = true;
+    setRecoveryStatus("saving");
+    try {
+      await settingsWriter.current.write(settings);
+      setRecoveryStatus(pendingSettings.current ? "saving" : "saved");
+      setRecoveryError(localRecoveryError.current);
+    } catch (error) {
+      pendingSettings.current = Object.assign(
+        {},
+        settings,
+        pendingSettings.current,
+      );
+      setRecoveryStatus("error");
+      setRecoveryError(
+        "Recupero automatico nel workspace non riuscito: " +
+          errorMessage(error),
+      );
+    } finally {
+      savingSettings.current = false;
+    }
+  }, []);
+  const fileRecoveryChanged = useCallback(
+    (recovery: FileRecovery | null) => setFileRecovery(recovery),
+    [],
+  );
+  const [fileRecoveryError, setFileRecoveryError] = useState("");
+  const [fileOperationBusy, setFileOperationBusy] = useState(false);
+  const [fileOpenToken, setFileOpenToken] = useState(0);
+  const [folderOpenToken, setFolderOpenToken] = useState(0);
+  const [filePath, setFilePath] = useState("");
+  const [fileQueue, setFileQueue] = useState<string[]>([]);
+  const [fileDropActive, setFileDropActive] = useState(false);
+  const [importScriptPath, setImportScriptPath] = useState("");
+  const [saveFileDialog, setSaveFileDialog] = useState(false);
+  const [saveFilePath, setSaveFilePath] = useState("");
+  const [saveFileDocumentId, setSaveFileDocumentId] = useState("");
+  const [saveFileBusy, setSaveFileBusy] = useState(false);
+  const [saveFileError, setSaveFileError] = useState("");
+  const [documentFileErrors, setDocumentFileErrors] = useState<
+    Record<string, string>
+  >({});
+  const [replaceFile, setReplaceFile] = useState(false);
+  const fileCenterDirty = useRef(false);
+  const fileDirtyChanged = useCallback((dirty: boolean) => {
+    fileCenterDirty.current = dirty;
+  }, []);
+  const activeDocumentIdRef = useRef(activeDocumentId);
+  activeDocumentIdRef.current = activeDocumentId;
+  const queryContentRef = useRef(query);
+  queryContentRef.current = query;
+
+  const openFilesRef = useRef<() => void>(() => {});
+  const closeDocumentRef = useRef<() => void>(() => {});
+  const saveAsRef = useRef<() => void>(() => {});
+  const pendingCloseRef = useRef(false);
+  const [exitDialog, setExitDialog] = useState(false);
+  const [exitBusy, setExitBusy] = useState(false);
+  const [exitError, setExitError] = useState("");
   const [showElements, setShowElements] = useState(true);
   const [querySelection, setQuerySelection] = useState("");
   const [lesson, setLesson] = useState<{
@@ -164,14 +320,25 @@ export default function App() {
     analysis?: QueryExplanation;
     text?: string;
   } | null>(null);
-  const [executionMode, setExecutionMode] = useState("current");
+  const [executionMode, setExecutionMode] = useState(
+    INITIAL_DOCUMENTS.find((d) => d.id === INITIAL_DOCUMENT_ID)
+      ?.executionMode || "current",
+  );
   const [showParameters, setShowParameters] = useState(false);
-  const [parametersText, setParametersText] = useState("{}");
+  const [parametersText, setParametersText] = useState(
+    INITIAL_DOCUMENTS.find((d) => d.id === INITIAL_DOCUMENT_ID)
+      ?.parametersText || "{}",
+  );
+  const parametersContentRef = useRef(parametersText);
+  parametersContentRef.current = parametersText;
   const [result, setResult] = useState<QueryResult | null>(null);
   const [resultIndex, setResultIndex] = useState(0);
   const [queryError, setQueryError] = useState("");
   const [running, setRunning] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [transferBusy, setTransferBusy] = useState(false);
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
   const [tableLoading, setTableLoading] = useState(false);
   const [selectedTable, setSelectedTable] = useState<TableInfo | null>(null);
   const [tableFilter, setTableFilter] = useState("");
@@ -187,19 +354,31 @@ export default function App() {
     index: number;
     inserting?: boolean;
   } | null>(null);
+  const [newConnectionEngine, setNewConnectionEngine] =
+    useState<Engine>("sqlite");
   const [profileDialog, setProfileDialog] = useState<
     ConnectionProfile | null | undefined
   >(undefined);
+  function openNewConnection(engine: Engine = "sqlite") {
+    setNewConnectionEngine(engine);
+    setProfileDialog(null);
+  }
   const [assistant, setAssistant] = useState(false);
   const [sidebarTab, setSidebarTab] = useState("explorer");
   const [explorerSearch, setExplorerSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [globalSearch, setGlobalSearch] = useState("");
   const [toast, setToast] = useState("");
   const [toastError, setToastError] = useState(false);
   const [saveDialog, setSaveDialog] = useState(false);
+  const [saveQueryBusy, setSaveQueryBusy] = useState(false);
+  const [savedDialogDocumentId, setSavedDialogDocumentId] = useState("");
   const [savedName, setSavedName] = useState("");
-  const [activeSavedId, setActiveSavedId] = useState("");
+  const [activeSavedId, setActiveSavedId] = useState(
+    INITIAL_DOCUMENTS.find((d) => d.id === INITIAL_DOCUMENT_ID)?.savedQueryId ||
+      "",
+  );
   const [message, setMessage] = useState("Pronto");
   const [editorHeight, setEditorHeight] = useState(280);
   const [sidebarWidth, setSidebarWidth] = useState(
@@ -212,6 +391,7 @@ export default function App() {
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const runRef = useRef<() => void>(() => {});
   const sqlToolsRef = useRef<{ dispose: () => void } | null>(null);
+  const monacoApiRef = useRef<typeof import("monaco-editor") | null>(null);
   const sqlContextRef = useRef<{
     engine: Engine;
     schema: SchemaSnapshot | null;
@@ -228,7 +408,182 @@ export default function App() {
   const initialized = useRef(false);
   const profile = boot.profiles.find((item) => item.id === profileId);
   const engine: Engine = profile?.engine || schema?.engine || "sqlite";
-  sqlContextRef.current = { engine, schema };
+  const activeDocument =
+    documents.find((d) => d.id === activeDocumentId) || documents[0];
+  const documentEngine: Engine =
+    activeDocument.kind === "mongodb"
+      ? "mongodb"
+      : engine === "mongodb"
+        ? "sqlite"
+        : engine;
+  const documentSchema =
+    (activeDocument.kind === "mongodb") === (engine === "mongodb")
+      ? schema
+      : null;
+  sqlContextRef.current = { engine: documentEngine, schema: documentSchema };
+  const documentSnapshot = documents.map((d) =>
+    d.id === activeDocumentId
+      ? {
+          ...d,
+          content: query,
+          parametersText,
+          executionMode,
+          savedQueryId: activeSavedId,
+        }
+      : d,
+  );
+  const workspaceSnapshot = {
+    version: 1 as const,
+    activeId: activeDocumentId,
+    documents: documentSnapshot,
+  };
+  const queryRecoveryError = documentSnapshot.some(
+    (doc) => doc.parametersText.length > 65536,
+  )
+    ? "I parametri superano il limite di recupero automatico. Salvali separatamente e riducili prima di chiudere."
+    : "";
+  pendingCloseRef.current =
+    running ||
+    transferBusy ||
+    saveFileBusy ||
+    fileOperationBusy ||
+    !!queryRecoveryError ||
+    !!changes.size ||
+    fileCenterDirty.current ||
+    documentSnapshot.some((d) => isQueryDocumentDirty(d));
+  async function activateDocument(id: string) {
+    const target = documentSnapshot.find((d) => d.id === id);
+    if (!target || id === activeDocumentId) {
+      setView("editor");
+      return;
+    }
+    if (running) {
+      notify("Attendi la fine della query prima di cambiare scheda.");
+      return;
+    }
+    if (!(await canLeaveChanges())) return;
+    setChanges(new Map());
+    setDocuments(documentSnapshot);
+    setActiveDocumentId(id);
+    setQuery(target.content);
+    setParametersText(target.parametersText);
+    setExecutionMode(target.executionMode);
+    setActiveSavedId(target.savedQueryId || "");
+    setResult(null);
+    setSelectedTable(null);
+    setQueryError("");
+    lastSelectionRef.current = null;
+    setView("editor");
+  }
+  async function addQueryDocument(document: QueryDocument) {
+    if (running) {
+      notify("Attendi la fine della query prima di aprire una nuova scheda.");
+      return false;
+    }
+    if (!(await canLeaveChanges())) return false;
+    const reuseEmpty =
+      !query &&
+      !activeDocument.path &&
+      !activeDocument.sourcePath &&
+      !activeSavedId &&
+      !!(document.content || document.path);
+    const retained = reuseEmpty
+      ? documentSnapshot.filter((d) => d.id !== activeDocumentId)
+      : documentSnapshot;
+    if (reuseEmpty) document.id = activeDocumentId;
+    try {
+      checkDocumentCapacity(retained, document);
+    } catch (e) {
+      notify(errorMessage(e), true);
+      return false;
+    }
+    setChanges(new Map());
+    setDocuments([...retained, document]);
+    setActiveDocumentId(document.id);
+    setQuery(document.content);
+    setParametersText(document.parametersText);
+    setExecutionMode(document.executionMode);
+    setActiveSavedId(document.savedQueryId || "");
+    setResult(null);
+    setSelectedTable(null);
+    setQueryError("");
+    lastSelectionRef.current = null;
+    setView("editor");
+    return true;
+  }
+  async function closeQueryDocument(id: string) {
+    if (running) {
+      notify("Attendi la fine della query prima di chiudere una scheda.");
+      return;
+    }
+    if (id === activeDocumentId && !(await canLeaveChanges())) return;
+    const target = documentSnapshot.find((d) => d.id === id);
+    if (
+      !target ||
+      (isQueryDocumentDirty(target) &&
+        !(await confirm(
+          `Chiudere «${target.title}» e scartare le modifiche non salvate?`,
+        )))
+    )
+      return;
+    const remaining = documentSnapshot.filter((d) => d.id !== id);
+    if (!remaining.length) remaining.push(createQueryDocument("", engine));
+    setDocuments(remaining);
+    setDocumentFileErrors((old) => {
+      const next = { ...old };
+      delete next[id];
+      return next;
+    });
+    const uri = monacoApiRef.current?.Uri.parse(
+      `query-document-${target.id}.${target.kind === "mongodb" ? "json" : "sql"}`,
+    );
+    window.setTimeout(() => {
+      if (uri && activeDocumentIdRef.current !== target.id)
+        monacoApiRef.current?.editor.getModel(uri)?.dispose();
+    }, 0);
+    if (id === activeDocumentId) {
+      setChanges(new Map());
+      const next =
+        remaining[
+          Math.min(
+            documents.findIndex((d) => d.id === id),
+            remaining.length - 1,
+          )
+        ];
+      setActiveDocumentId(next.id);
+      setQuery(next.content);
+      setParametersText(next.parametersText);
+      setExecutionMode(next.executionMode);
+      setActiveSavedId(next.savedQueryId || "");
+      setResult(null);
+      setSelectedTable(null);
+      lastSelectionRef.current = null;
+    }
+  }
+  closeDocumentRef.current = () => closeQueryDocument(activeDocumentId);
+  function showFileCenter(browse = false, paths: string[] = []) {
+    setFilesMounted(true);
+    setView("files");
+    if (browse) setFileOpenToken((n) => n + 1);
+    if (paths.length) {
+      setGeneratedFileDraft(undefined);
+      const unique = paths
+        .filter(
+          (p, i) =>
+            typeof p === "string" &&
+            p.length &&
+            !paths.slice(0, i).some((old) => sameDocumentPath(old, p)),
+        )
+        .slice(0, 32);
+      setFileQueue(unique);
+      setFilePath(unique[0] || "");
+    }
+  }
+  openFilesRef.current = () => showFileCenter(true);
+  const scriptAnalysis = useMemo(
+    () => (activeDocument.kind === "sql" ? analyzeSqlScript(query) : null),
+    [query, activeDocument.kind],
+  );
   const activeResult = result?.sets[resultIndex];
   const effectiveColumns =
     activeResult?.columns.map((column) => ({
@@ -257,12 +612,47 @@ export default function App() {
       if (!initialized.current) {
         setTheme((data.settings.theme as Theme) || "dark");
         setMode((data.settings.mode as Mode) || "work");
+        if (
+          !LOCAL_UI.lastView &&
+          !navigationTouched.current &&
+          NAV.some((item) => item.id === data.settings.lastView)
+        ) {
+          const restored = data.settings.lastView as View;
+          viewRef.current = restored;
+          setViewState(restored);
+          if (restored === "powershell") setPowerShellMounted(true);
+          if (restored === "library") setQueryCatalogMounted(true);
+        }
         setProfileId(String(data.settings.lastProfileId || ""));
         draftsRef.current = {
           ...((data.settings.drafts || {}) as Record<string, string>),
           ...draftsRef.current,
         };
-        setQuery(draftsRef.current.sqlite || String(data.settings.draft || ""));
+        const snapshot = selectRecoverySnapshot(LOCAL_UI, data.settings);
+        const recovered =
+          restoreQueryWorkspace(snapshot.queryWorkspace) ||
+          restoreQueryWorkspace(data.settings.queryWorkspace);
+        setFileRecovery(
+          restoreFileRecovery(
+            Object.hasOwn(snapshot, "fileRecovery")
+              ? snapshot.fileRecovery
+              : data.settings.fileRecovery,
+          ),
+        );
+        if (recovered) {
+          const selected = recovered.documents.find(
+            (d) => d.id === recovered.activeId,
+          )!;
+          setDocuments(recovered.documents);
+          setActiveDocumentId(recovered.activeId);
+          setQuery(selected.content);
+          setParametersText(selected.parametersText);
+          setExecutionMode(selected.executionMode);
+          setActiveSavedId(selected.savedQueryId || "");
+        } else
+          setQuery(
+            draftsRef.current.sqlite || String(data.settings.draft || ""),
+          );
         if (!LOCAL_UI.sidebarWidth)
           setSidebarWidth(Number(data.settings.sidebarWidth) || 250);
         initialized.current = true;
@@ -293,51 +683,116 @@ export default function App() {
   useEffect(() => {
     if (previousEngine.current === engine) return;
     draftsRef.current[previousEngine.current] = query;
-    setQuery(draftsRef.current[engine] || "");
     previousEngine.current = engine;
   }, [engine]);
   useEffect(() => {
     if (!initialized.current) return;
     draftsRef.current[engine] = query;
+    const recoveryUpdatedAt = Date.now();
     try {
       localStorage.setItem(
         DRAFT_STORAGE,
-        JSON.stringify({ version: 1, drafts: draftsRef.current, sidebarWidth }),
-      );
-    } catch {
-      /* Le preferenze restano salvate anche nel workspace backend. */
-    }
-    const timer = window.setTimeout(() => {
-      void api("update_settings", {
-        settings: {
-          theme,
-          mode,
-          lastProfileId: profileId,
-          draft: query,
+        JSON.stringify({
+          version: 1,
           drafts: draftsRef.current,
           sidebarWidth,
-        },
-      }).catch(() => {});
+          queryWorkspace: workspaceSnapshot,
+          fileRecovery,
+          lastView: view,
+          recoveryUpdatedAt,
+        }),
+      );
+      localRecoveryError.current = "";
+    } catch {
+      localRecoveryError.current =
+        "La copia di recupero locale non è disponibile. Le bozze vengono conservate nel workspace quando il backend risponde.";
+      setRecoveryError(localRecoveryError.current);
+    }
+    pendingSettings.current = {
+      theme,
+      mode,
+      lastProfileId: profileId,
+      draft: query,
+      drafts: { ...draftsRef.current },
+      sidebarWidth,
+      queryWorkspace: workspaceSnapshot,
+      fileRecovery,
+      lastView: view,
+      recoveryUpdatedAt,
+    };
+    setRecoveryStatus("saving");
+    const timer = window.setTimeout(() => {
+      void flushRecovery();
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [theme, mode, profileId, query, engine, sidebarWidth]);
+  }, [
+    theme,
+    mode,
+    profileId,
+    query,
+    engine,
+    sidebarWidth,
+    documents,
+    activeDocumentId,
+    parametersText,
+    executionMode,
+    activeSavedId,
+    view,
+    fileRecovery,
+    flushRecovery,
+  ]);
+  useEffect(() => {
+    // Continuous typing must not postpone the durable copy indefinitely.
+    const timer = window.setInterval(() => void flushRecovery(), 2000);
+    const flushWhenHidden = () => {
+      if (document.visibilityState === "hidden") void flushRecovery();
+    };
+    window.document.addEventListener("visibilitychange", flushWhenHidden);
+    return () => {
+      window.clearInterval(timer);
+      window.document.removeEventListener("visibilitychange", flushWhenHidden);
+    };
+  }, [flushRecovery]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        document.querySelector('[aria-modal="true"]')
+      )
+        return;
+      if (event.altKey && event.key === "ArrowLeft") {
+        event.preventDefault();
+        goBack();
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setSearchOpen(true);
       }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "o") {
         event.preventDefault();
-        saveRef.current();
+        if (event.shiftKey) {
+          setFilesMounted(true);
+          setView("files");
+          setFolderOpenToken((n) => n + 1);
+        } else openFilesRef.current();
       }
       if (
         (event.ctrlKey || event.metaKey) &&
-        event.key === "Enter" &&
-        view !== "editor"
+        event.key.toLowerCase() === "w" &&
+        view === "editor"
       ) {
         event.preventDefault();
-        setView("editor");
+        closeDocumentRef.current();
+      }
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "s" &&
+        view === "editor"
+      ) {
+        event.preventDefault();
+        if (event.shiftKey) saveAsRef.current();
+        else saveRef.current();
       }
     };
     window.addEventListener("keydown", key);
@@ -345,7 +800,7 @@ export default function App() {
   }, [view]);
   useEffect(() => {
     const unload = (event: BeforeUnloadEvent) => {
-      if (changes.size) {
+      if (pendingCloseRef.current) {
         event.preventDefault();
         event.returnValue = "";
       }
@@ -353,21 +808,132 @@ export default function App() {
     window.addEventListener("beforeunload", unload);
     return () => window.removeEventListener("beforeunload", unload);
   }, [changes.size]);
-  const canLeaveChanges = () =>
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    const cleanups: (() => void)[] = [];
+    void import("@tauri-apps/api/webview")
+      .then(async ({ getCurrentWebview }) => {
+        const unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+          if (event.payload.type === "enter") setFileDropActive(true);
+          if (event.payload.type === "leave" || event.payload.type === "drop")
+            setFileDropActive(false);
+          if (event.payload.type === "drop")
+            showFileCenter(false, event.payload.paths);
+        });
+        if (disposed) unlisten();
+        else cleanups.push(unlisten);
+      })
+      .catch(() => {});
+    void import("@tauri-apps/api/window")
+      .then(async ({ getCurrentWindow }) => {
+        const unlisten = await getCurrentWindow().onCloseRequested((event) => {
+          if (pendingCloseRef.current || fileCenterDirty.current) {
+            event.preventDefault();
+            setExitError("");
+            setExitDialog(true);
+          }
+        });
+        if (disposed) unlisten();
+        else cleanups.push(unlisten);
+      })
+      .catch(() => {});
+    let reading = false;
+    const readRequests = async () => {
+      if (reading) return;
+      reading = true;
+      try {
+        const paths = await api<string[]>("read_workspace_open_requests");
+        if (!disposed && paths.length) showFileCenter(false, paths);
+      } catch {
+      } finally {
+        reading = false;
+      }
+    };
+    void readRequests();
+    const timer = window.setInterval(() => void readRequests(), 1200);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      cleanups.forEach((stop) => stop());
+    };
+  }, []);
+  async function closeApplication() {
+    if (
+      exitBusy ||
+      running ||
+      transferBusy ||
+      saveFileBusy ||
+      fileOperationBusy
+    )
+      return;
+    if (fileRecoveryError || queryRecoveryError) {
+      setExitError(
+        (fileRecoveryError || queryRecoveryError) +
+          " Annulla la chiusura e salva il file.",
+      );
+      return;
+    }
+    setExitBusy(true);
+    setExitError("");
+    try {
+      const data = {
+        version: 1,
+        drafts: draftsRef.current,
+        sidebarWidth,
+        queryWorkspace: workspaceSnapshot,
+        fileRecovery,
+        lastView: view,
+        recoveryUpdatedAt: Date.now(),
+      };
+      try {
+        localStorage.setItem(DRAFT_STORAGE, JSON.stringify(data));
+      } catch {
+        /* The backend copy remains required. */
+      }
+      pendingSettings.current = null;
+      await settingsWriter.current.write({
+        drafts: draftsRef.current,
+        draft: query,
+        queryWorkspace: workspaceSnapshot,
+        fileRecovery,
+        lastView: view,
+        sidebarWidth,
+        theme,
+        mode,
+        lastProfileId: profileId,
+        recoveryUpdatedAt: data.recoveryUpdatedAt,
+      });
+      if (isTauri()) {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        await getCurrentWindow().destroy();
+      } else {
+        setExitDialog(false);
+        notify(
+          "Bozze conservate. La chiusura della finestra si applica alla versione desktop.",
+        );
+      }
+    } catch (error) {
+      setExitError(errorMessage(error));
+    } finally {
+      setExitBusy(false);
+    }
+  }
+  const canLeaveChanges = async () =>
     !changes.size ||
-    window.confirm(
+    (await confirm(
       "Sono presenti modifiche preparate e non applicate. Scartarle e continuare?",
-    );
+    ));
   async function connect(nextProfile = profile) {
-    if (running) {
-      notify("Attendi il completamento della query o richiedi l’interruzione.");
+    if (running || transferBusy) {
+      notify("Attendi il completamento dell’operazione in corso.");
       return null;
     }
     if (!nextProfile) {
-      setProfileDialog(null);
+      openNewConnection();
       return null;
     }
-    if (!canLeaveChanges()) return null;
+    if (!(await canLeaveChanges())) return null;
     setConnecting(true);
     setQueryError("");
     setMessage(`Connessione a ${nextProfile.name}…`);
@@ -409,7 +975,7 @@ export default function App() {
     nextDesc = sortDesc,
     filter = tableFilter,
   ) {
-    if (!canLeaveChanges()) return;
+    if (!(await canLeaveChanges())) return;
     let id = sessionId;
     if (!id) {
       const opened = await connect();
@@ -446,27 +1012,305 @@ export default function App() {
       setTableLoading(false);
     }
   }
-  function openQuery(text: string, id = "") {
-    if (!canLeaveChanges()) return;
-    setQuery(text);
-    lastSelectionRef.current = null;
-    setActiveSavedId(id);
-    const saved = boot.savedQueries.find((item) => item.id === id);
-    setParametersText(JSON.stringify(saved?.parameters || {}, null, 2));
-    setShowParameters(Object.keys(saved?.parameters || {}).length > 0);
-    setExecutionMode(saved?.executionMode || "current");
-    setChanges(new Map());
-    setView("editor");
-    setSearchOpen(false);
+  async function openedExistingDatabase(opened: OpenedFileDatabase) {
+    if (running || transferBusy) {
+      void api("close_session", { sessionId: opened.sessionId });
+      notify("Attendi la fine della query prima di aprire un altro database.");
+      return;
+    }
+    if (!(await canLeaveChanges())) {
+      void api("close_session", { sessionId: opened.sessionId });
+      return;
+    }
+    openedLab(opened);
+    setView("data");
+    setMessage(
+      `Aperto ${opened.profile.filePath}${opened.profile.readOnly ? " · sola lettura" : ""}`,
+    );
+    notify("Database esistente aperto. Scegli una tabella nell’esploratore.");
   }
-  function openParameterizedQuery(
+  async function openFileQuery(
+    text: string,
+    label = "Script",
+    path?: string,
+    options?: FileQueryOpenOptions,
+  ) {
+    const boundPath = options?.sourceOnly === false ? path : undefined;
+    const existing = boundPath
+      ? documentSnapshot.find(
+          (d) => d.path && sameDocumentPath(d.path, boundPath),
+        )
+      : undefined;
+    if (existing) {
+      activateDocument(existing.id);
+      notify(
+        "Scheda del file già aperta; le modifiche locali sono conservate.",
+      );
+      return;
+    }
+    const document = createQueryDocument(
+      text,
+      options?.kind === "mongodb" ? "mongodb" : "sqlite",
+      label,
+    );
+    document.path = boundPath;
+    document.sourcePath = boundPath ? undefined : path;
+    document.sourceLine = options?.startLine;
+    document.partial = options?.confidence === "partial";
+    document.encoding = boundPath ? options?.encoding : undefined;
+    document.fingerprint = boundPath ? options?.fingerprint : undefined;
+    document.baseline = boundPath ? (options?.originalContent ?? text) : "";
+    document.executionMode = options?.sourceOnly ? "current" : "script";
+    if (!(await addQueryDocument(document))) return;
+    setChanges(new Map());
+    if (options?.parameters?.length) {
+      setShowParameters(true);
+      notify(
+        "La query usa parametri. Inserisci i valori nel pannello Parametri: non sono stati ricavati dal programma.",
+      );
+    }
+  }
+  function showSaveFileAs() {
+    const document = { ...activeDocument };
+    const initialPath =
+      document.path ||
+      (document.kind === "mongodb" ? "query.mql" : "query.sql");
+    const show = (path: string) => {
+      if (activeDocumentIdRef.current !== document.id) {
+        notify(
+          "La scheda è cambiata. Ripeti Salva con nome sul documento desiderato.",
+        );
+        return;
+      }
+      setSaveFileDocumentId(document.id);
+      setSaveFilePath(path);
+      setReplaceFile(false);
+      setSaveFileError("");
+      setSaveFileDialog(true);
+    };
+    if (!isTauri()) {
+      show(initialPath);
+      return;
+    }
+    void import("@tauri-apps/plugin-dialog")
+      .then((dialog) =>
+        dialog.save({
+          defaultPath: initialPath,
+          filters: [
+            {
+              name: "Script SQL / MongoDB",
+              extensions: ["sql", "ddl", "mql", "json", "txt"],
+            },
+          ],
+        }),
+      )
+      .then((path) => {
+        if (path) show(path);
+      })
+      .catch((error) => notify(errorMessage(error), true));
+  }
+  async function saveCurrentFile(
+    target = activeDocument.path || "",
+    saveAs = false,
+  ) {
+    if (saveFileBusy) return;
+    if (saveAs && activeDocumentId !== saveFileDocumentId) {
+      setSaveFileError(
+        "La scheda è cambiata. Annulla e ripeti Salva con nome sul documento desiderato.",
+      );
+      return;
+    }
+    if (!target) {
+      showSaveFileAs();
+      return;
+    }
+    const document = { ...activeDocument },
+      content = query;
+    setSaveFileBusy(true);
+    setSaveFileError("");
+    try {
+      if (saveAs && !/\.(sql|ddl|dml|psql|mql|json|txt)$/i.test(target))
+        throw new Error(
+          "Scegli un’estensione per script (.sql, .ddl, .mql, .json o .txt). Il sorgente da cui hai estratto la query si modifica nel centro Apri file.",
+        );
+      let expectedFingerprint: string | null = saveAs
+        ? null
+        : document.fingerprint || null;
+      if (!saveAs && !expectedFingerprint)
+        throw new Error(
+          "Manca la versione del file. Riaprilo da Apri file e database prima di salvarlo.",
+        );
+      if (saveAs && replaceFile) {
+        let inspected: {
+          kind: string;
+          fingerprint: string;
+          content?: string;
+        } | null = null;
+        try {
+          inspected = await api("inspect_workspace_file", {
+            path: target,
+            encoding: document.encoding,
+          });
+        } catch {
+          /* create_new prevents overwriting an uninspected file. */
+        }
+        if (inspected) {
+          if (typeof inspected.content !== "string")
+            throw new Error(
+              "Il percorso selezionato non è un file di testo modificabile.",
+            );
+          expectedFingerprint = inspected.fingerprint;
+        }
+      }
+      const saved = await api<{
+        path: string;
+        name: string;
+        fingerprint: string;
+        encoding: string;
+      }>("save_workspace_text", {
+        path: target,
+        content,
+        encoding: document.encoding || "utf-8",
+        expectedFingerprint,
+      });
+      setDocuments((old) =>
+        old.map((d) =>
+          d.id === document.id
+            ? {
+                ...d,
+                path: saved.path,
+                title: saved.name,
+                fingerprint: saved.fingerprint,
+                encoding: saved.encoding,
+                baseline: content,
+                sourcePath: undefined,
+                sourceLine: undefined,
+              }
+            : d,
+        ),
+      );
+      setSaveFileDialog(false);
+      setDocumentFileErrors((old) => {
+        const next = { ...old };
+        delete next[document.id];
+        return next;
+      });
+      window.dispatchEvent(
+        new CustomEvent("dbm:workspace-file-saved", {
+          detail: { path: saved.path },
+        }),
+      );
+      notify("File salvato. Lo script non è stato eseguito.");
+    } catch (e) {
+      const message = errorMessage(e);
+      setSaveFileError(message);
+      setDocumentFileErrors((old) => ({ ...old, [document.id]: message }));
+      notify(message, true);
+    } finally {
+      setSaveFileBusy(false);
+    }
+  }
+  async function reloadCurrentFile() {
+    const document = { ...activeDocument },
+      before = query;
+    if (!document.path) return;
+    if (
+      isQueryDocumentDirty(document, query) &&
+      !(await confirm(
+        "Ricaricare dal disco e scartare le modifiche della scheda?",
+      ))
+    )
+      return;
+    try {
+      const inspected = await api<{
+        path: string;
+        name: string;
+        content?: string;
+        fingerprint: string;
+        encoding?: string;
+      }>("inspect_workspace_file", {
+        path: document.path,
+        encoding: document.encoding,
+      });
+      if (typeof inspected.content !== "string")
+        throw new Error(
+          "Il file non è più un documento di testo leggibile. Aprilo nel centro file per verificarlo.",
+        );
+      if (
+        activeDocumentIdRef.current !== document.id ||
+        queryContentRef.current !== before
+      )
+        throw new Error(
+          "La scheda è cambiata durante la lettura. Ripeti Ricarica dopo aver terminato la modifica.",
+        );
+      setDocuments((old) =>
+        old.map((d) =>
+          d.id === document.id
+            ? {
+                ...d,
+                path: inspected.path,
+                title: inspected.name,
+                content: inspected.content!,
+                baseline: inspected.content!,
+                fingerprint: inspected.fingerprint,
+                encoding: inspected.encoding,
+              }
+            : d,
+        ),
+      );
+      setQuery(inspected.content);
+      setDocumentFileErrors((old) => {
+        const next = { ...old };
+        delete next[document.id];
+        return next;
+      });
+      notify("File ricaricato dal disco.");
+    } catch (e) {
+      notify(errorMessage(e), true);
+    }
+  }
+  async function openQuery(
+    text: string,
+    id = "",
+    targetEngine: Engine = engine,
+  ) {
+    const existing = id
+      ? documentSnapshot.find((d) => d.savedQueryId === id)
+      : undefined;
+    if (existing) {
+      activateDocument(existing.id);
+      setSearchOpen(false);
+      return false;
+    }
+    const saved = boot.savedQueries.find((item) => item.id === id);
+    const document = createQueryDocument(
+      text,
+      saved?.engine || targetEngine,
+      saved?.name || "Query senza titolo",
+    );
+    document.savedQueryId = id;
+    document.parametersText = JSON.stringify(saved?.parameters || {}, null, 2);
+    document.executionMode = saved?.executionMode || "current";
+    if (saved) {
+      document.baseline = text;
+      document.savedParametersText = document.parametersText;
+      document.savedExecutionMode = document.executionMode;
+    }
+    if (!(await addQueryDocument(document))) return false;
+    setChanges(new Map());
+    setSearchOpen(false);
+    return true;
+  }
+  async function openParameterizedQuery(
     text: string,
     parameters: Record<string, unknown> = {},
     savedId = "",
+    targetEngine: Engine = engine,
   ) {
-    openQuery(text, savedId);
+    if (!(await openQuery(text, savedId, targetEngine))) return false;
     setParametersText(JSON.stringify(parameters, null, 2));
     setShowParameters(Object.keys(parameters).length > 0);
+    return true;
   }
   function insertQueryElement(
     text: string,
@@ -506,13 +1350,32 @@ export default function App() {
     ]);
     editor.focus();
   }
-  function openLibraryEntry(entry: LibraryEntry) {
-    openParameterizedQuery(
+  async function openLibraryEntry(entry: LibraryEntry) {
+    const savedId = entry.source === "saved" ? entry.sourceId || "" : "";
+    const existing = savedId
+      ? documentSnapshot.find((document) => document.savedQueryId === savedId)
+      : undefined;
+    if (existing) {
+      activateDocument(existing.id);
+      return;
+    }
+    const document = createQueryDocument(
       entry.query,
-      entry.parameters || {},
-      entry.source === "saved" ? entry.sourceId || "" : "",
+      entry.engine,
+      entry.title,
     );
-    setExecutionMode(entry.executionMode || "current");
+    document.parametersText = JSON.stringify(entry.parameters || {}, null, 2);
+    document.executionMode = entry.executionMode || "current";
+    document.originView = "library";
+    document.originLabel = "Catalogo Query";
+    if (savedId) {
+      document.savedQueryId = savedId;
+      document.baseline = entry.query;
+      document.savedParametersText = document.parametersText;
+      document.savedExecutionMode = document.executionMode;
+    }
+    if (!(await addQueryDocument(document))) return;
+    setShowParameters(Object.keys(entry.parameters || {}).length > 0);
     if (entry.engine !== engine)
       notify(
         `Esempio per ${ENGINE_LABELS[entry.engine]}. Controlla la connessione prima di eseguire.`,
@@ -521,6 +1384,8 @@ export default function App() {
   async function applyDesign(
     script: string,
     designEngine: Engine,
+    expectedSchema?: SchemaSnapshot | null,
+    rebuildSqlite = false,
   ): Promise<SchemaSnapshot> {
     if (designEngine !== engine)
       throw new Error(
@@ -534,23 +1399,25 @@ export default function App() {
         throw new Error("Collega un database prima della creazione.");
       id = opened.id;
     }
-    const commands = designEngine === "mongodb" ? JSON.parse(script) : null;
-    const list = Array.isArray(commands)
-      ? commands
-      : designEngine === "mongodb"
-        ? [commands]
-        : [script];
-    for (const command of list) {
-      await api("execute_query", {
+    let next: SchemaSnapshot;
+    try {
+      next = await api<SchemaSnapshot>("apply_schema_changes", {
         sessionId: id,
-        query: designEngine === "mongodb" ? JSON.stringify(command) : command,
-        parameters: {},
+        script,
+        expectedSchema: expectedSchema || schema,
+        rebuildSqlite,
+        confirmed: true,
       });
+    } catch (error) {
+      // Server DDL can commit individual statements; immediately expose the real state.
+      try {
+        setSchema(await api<SchemaSnapshot>("introspect", { sessionId: id }));
+      } catch {}
+      throw error;
     }
-    const next = await api<SchemaSnapshot>("introspect", { sessionId: id });
     setSchema(next);
     notify(
-      "Strutture create. Apri Dati tabella per inserire e modificare i record.",
+      "Piano schema applicato. Apri Dati tabella per verificare i record.",
     );
     return next;
   }
@@ -568,12 +1435,40 @@ export default function App() {
   function showExplanation() {
     setLesson({
       title: "Spiegazione e ordine logico",
-      analysis: explainQuery(query, engine, schema),
+      analysis: explainQuery(
+        query,
+        activeDocument.kind === "mongodb"
+          ? "mongodb"
+          : engine === "mongodb"
+            ? "sqlite"
+            : engine,
+        (activeDocument.kind === "mongodb") === (engine === "mongodb")
+          ? schema
+          : null,
+      ),
     });
   }
   async function run() {
+    if (transferBusy) {
+      notify("Attendi il completamento dell’importazione o del trasferimento.");
+      return;
+    }
     if (running || !query.trim()) return;
-    if (!canLeaveChanges()) return;
+    if ((activeDocument.kind === "mongodb") !== (engine === "mongodb")) {
+      notify(
+        "La scheda e la connessione usano linguaggi diversi. Scegli una connessione SQL oppure MongoDB coerente con il documento.",
+        true,
+      );
+      return;
+    }
+    if (
+      activeDocument.partial &&
+      !(await confirm(
+        "Questa bozza proviene da codice dinamico o incompleto. Hai completato query e parametri e vuoi eseguirla sulla connessione visibile?",
+      ))
+    )
+      return;
+    if (!(await canLeaveChanges())) return;
     let id = sessionId;
     if (!id) {
       const opened = await connect();
@@ -596,6 +1491,17 @@ export default function App() {
           : selected || statementAt(query, position);
     if (!text.trim()) {
       notify("Seleziona o scrivi una query da eseguire.");
+      return;
+    }
+    if (
+      activeDocument.kind === "sql" &&
+      analyzeSqlScript(text).nativeClientRequired
+    ) {
+      setQueryError(analyzeSqlScript(text).warnings.join("\n"));
+      notify(
+        "Lo script richiede un client specifico: rivedi le indicazioni e usa l’importazione guidata.",
+        true,
+      );
       return;
     }
     let parameters: Record<string, unknown>;
@@ -642,14 +1548,21 @@ export default function App() {
     }
   }
   runRef.current = () => void run();
-  saveRef.current = () => {
+  function saveInLibrary() {
+    if (saveQueryBusy) return;
     if (query.trim()) {
+      setSavedDialogDocumentId(activeDocumentId);
       setSavedName(
         boot.savedQueries.find((item) => item.id === activeSavedId)?.name || "",
       );
       setSaveDialog(true);
     } else notify("Scrivi una query da salvare.");
+  }
+  saveRef.current = () => {
+    if (activeDocument.path) void saveCurrentFile();
+    else showSaveFileAs();
   };
+  saveAsRef.current = showSaveFileAs;
   async function cancel() {
     try {
       const status = await api<string>("cancel_query", { sessionId });
@@ -659,7 +1572,16 @@ export default function App() {
     }
   }
   async function saveQuery() {
-    if (!savedName.trim()) return;
+    if (!savedName.trim() || saveQueryBusy) return;
+    if (savedDialogDocumentId !== activeDocumentId) {
+      notify(
+        "La scheda è cambiata. Riapri Salva in libreria sul documento desiderato.",
+        true,
+      );
+      return;
+    }
+    const documentId = activeDocumentId;
+    const originalParameters = parametersText;
     let savedParameters: Record<string, unknown>;
     try {
       savedParameters = JSON.parse(parametersText);
@@ -679,11 +1601,17 @@ export default function App() {
       id: activeSavedId || newId(),
       name: savedName.trim(),
       query,
-      engine,
+      engine:
+        activeDocument.kind === "mongodb"
+          ? "mongodb"
+          : engine === "mongodb"
+            ? "sqlite"
+            : engine,
       favorite:
         boot.savedQueries.find((item) => item.id === activeSavedId)?.favorite ||
         false,
     };
+    setSaveQueryBusy(true);
     try {
       await api("save_query", { query: saved });
       setBoot((old) => ({
@@ -693,11 +1621,31 @@ export default function App() {
           saved,
         ],
       }));
-      setActiveSavedId(saved.id);
+      if (activeDocumentIdRef.current === documentId) {
+        setActiveSavedId(saved.id);
+        if (parametersContentRef.current === originalParameters)
+          setParametersText(JSON.stringify(savedParameters, null, 2));
+      }
+      setDocuments((old) =>
+        old.map((d) =>
+          d.id === documentId
+            ? {
+                ...d,
+                title: d.path ? d.title : saved.name,
+                savedQueryId: saved.id,
+                savedParametersText: JSON.stringify(savedParameters, null, 2),
+                savedExecutionMode: executionMode,
+                baseline: d.path ? d.baseline : query,
+              }
+            : d,
+        ),
+      );
       setSaveDialog(false);
       notify("Query salvata.");
     } catch (e) {
       notify(errorMessage(e), true);
+    } finally {
+      setSaveQueryBusy(false);
     }
   }
   async function favorite(saved: SavedQuery) {
@@ -979,7 +1927,7 @@ export default function App() {
             className="version-pill"
             title="Copyright © 2026 Daniele Gabrovec"
           >
-            0.2.1
+            {packageMetadata.version}
           </span>
         </div>
         <button className="global-search" onClick={() => setSearchOpen(true)}>
@@ -991,21 +1939,14 @@ export default function App() {
           <FolderOpen size={12} />
           WORKSPACE LOCALE
         </div>
-        <nav className="primary-nav">
-          {NAV.map((item) => (
-            <button
-              key={item.id}
-              className={view === item.id ? "active" : ""}
-              onClick={() => setView(item.id)}
-            >
-              <item.icon size={17} />
-              <span>{item.label}</span>
-              {item.id === "laboratory" && (
-                <span className="nav-tag">IMPARA</span>
-              )}
-            </button>
-          ))}
-        </nav>
+        <WorkspaceNavigation
+          view={view}
+          onNavigate={(next) => {
+            if (next === "files") setFilesMounted(true);
+            if (next === "transfer") setImportScriptPath("");
+            setView(next);
+          }}
+        />
         <div className="sidebar-section">
           <div className="sidebar-tabs">
             <button
@@ -1022,6 +1963,8 @@ export default function App() {
             </button>
             <button
               className={sidebarTab === "history" ? "active" : ""}
+              aria-label="Cronologia query"
+              title="Cronologia query"
               onClick={() => setSidebarTab("history")}
             >
               <History size={13} />
@@ -1030,7 +1973,7 @@ export default function App() {
             <button
               className="icon-button"
               aria-label="Nuova connessione"
-              onClick={() => setProfileDialog(null)}
+              onClick={() => openNewConnection()}
             >
               <Plus size={16} />
             </button>
@@ -1080,7 +2023,7 @@ export default function App() {
                           <FolderOpen size={13} />
                           {schema?.engine === "mongodb"
                             ? "Collezioni"
-                            : "Tabelle"}
+                            : "Oggetti"}
                           <span>
                             {schema?.tables.filter(canBrowseData).length || 0}
                           </span>
@@ -1125,7 +2068,7 @@ export default function App() {
                   <div className="sidebar-empty">
                     <Cable size={22} />
                     <p>Collega il tuo primo database</p>
-                    <button onClick={() => setProfileDialog(null)}>
+                    <button onClick={() => openNewConnection()}>
                       Aggiungi connessione
                       <Plus size={12} />
                     </button>
@@ -1234,10 +2177,32 @@ export default function App() {
       <main className="main-shell">
         <header className="topbar">
           <div className="breadcrumbs">
+            <button
+              className="icon-button"
+              aria-label="Indietro nella navigazione"
+              title="Indietro"
+              disabled={!historyLength}
+              onClick={goBack}
+            >
+              <ArrowLeft size={15} />
+            </button>
             <span>Workspace</span>
             <ChevronRight size={13} />
+            {NAV_GROUPS.filter((group) =>
+              group.items.some((item) => item.id === view),
+            ).map((group) => (
+              <span className="breadcrumb-group" key={group.id}>
+                {group.label}
+                <ChevronRight size={13} />
+              </span>
+            ))}
             <strong>
-              {NAV.find((item) => item.id === view)?.label || "Impostazioni"}
+              {view === "library"
+                ? "Query"
+                : view === "powershell"
+                  ? "PowerShell"
+                  : NAV.find((item) => item.id === view)?.label ||
+                    "Impostazioni"}
             </strong>
             {profile && (
               <>
@@ -1279,6 +2244,13 @@ export default function App() {
             </Notice>
           </div>
         )}
+        {(recoveryError || fileRecoveryError || queryRecoveryError) && (
+          <div className="recovery-banner" role="alert">
+            <Notice tone="error">
+              {fileRecoveryError || queryRecoveryError || recoveryError}
+            </Notice>
+          </div>
+        )}
         {initializing ? (
           <div className="loading-screen">
             <LoaderCircle className="spin" size={30} />
@@ -1286,6 +2258,46 @@ export default function App() {
           </div>
         ) : (
           <div className="main-content">
+            {filesMounted && (
+              <div hidden={view !== "files"} className="file-center-host">
+                {fileQueue.length > 1 && (
+                  <div className="document-file-status">
+                    <strong>{fileQueue.length} file ricevuti</strong>
+                    {fileQueue.map((path) => (
+                      <button
+                        key={path}
+                        className="text-button"
+                        onClick={() => setFilePath(path)}
+                      >
+                        {path.split(/[\\/]/).pop()}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <OpenFilesView
+                  initialPath={filePath}
+                  initialRecovery={fileRecovery}
+                  onRecoveryChange={fileRecoveryChanged}
+                  onRecoveryError={setFileRecoveryError}
+                  onBusyChange={setFileOperationBusy}
+                  initialDraft={generatedFileDraft}
+                  onReturnToCatalog={() => returnToCatalog("powershell")}
+                  openRequestToken={fileOpenToken}
+                  folderOpenRequestToken={folderOpenToken}
+                  active={view === "files"}
+                  dark={dark}
+                  mode={mode}
+                  onDirtyChange={fileDirtyChanged}
+                  onOpenDatabase={openedExistingDatabase}
+                  onOpenQuery={openFileQuery}
+                  onImportScript={(path) => {
+                    setImportScriptPath(path);
+                    setView("transfer");
+                  }}
+                  onNewConnection={() => openNewConnection("postgresql")}
+                />
+              </div>
+            )}
             {view === "editor" && (
               <div
                 className={`editor-tools-layout ${showElements ? "has-elements" : ""}`}
@@ -1301,7 +2313,11 @@ export default function App() {
                       </h1>
                     </div>
                     <div className="row">
-                      <Button onClick={() => setProfileDialog(null)}>
+                      <Button onClick={() => showFileCenter(true)}>
+                        <FolderOpen size={14} />
+                        Apri file / database<kbd>Ctrl O</kbd>
+                      </Button>
+                      <Button onClick={() => openNewConnection()}>
                         <Plus size={14} />
                         Nuova connessione
                       </Button>
@@ -1375,32 +2391,91 @@ export default function App() {
                     )}
                   </div>
                   <section className="query-panel">
-                    <div className="editor-tabbar">
-                      <div className="editor-tab">
-                        <FileCode2 size={14} />
-                        {activeSavedId
-                          ? boot.savedQueries.find(
-                              (item) => item.id === activeSavedId,
-                            )?.name || "Query"
-                          : "Query senza titolo"}
-                        <span className="unsaved-dot" />
-                      </div>
-                      <div className="spacer" />
-                      <button
-                        className="icon-button"
-                        title="Salva query (Ctrl+S)"
+                    <QueryDocumentTabs
+                      documents={documentSnapshot}
+                      activeId={activeDocumentId}
+                      onSelect={activateDocument}
+                      onClose={closeQueryDocument}
+                      onNew={() => openQuery("")}
+                    />
+                    <div className="document-file-status">
+                      <span>
+                        {activeDocument.path ||
+                          (activeDocument.sourcePath
+                            ? `Estratta da ${activeDocument.sourcePath}${activeDocument.sourceLine ? ` · riga ${activeDocument.sourceLine}` : ""}`
+                            : "Bozza nel workspace")}
+                      </span>
+                      {activeDocument.encoding && (
+                        <span>{activeDocument.encoding}</span>
+                      )}
+                      {activeDocument.originView === "library" && (
+                        <Button onClick={() => returnToCatalog("library")}>
+                          Torna al Catalogo Query
+                        </Button>
+                      )}
+                      <span className="spacer" />
+                      <Button
                         onClick={() => saveRef.current()}
+                        disabled={saveFileBusy}
                       >
-                        <Save size={15} />
-                      </button>
-                      <button
-                        className="icon-button"
-                        title="Nuova query"
-                        onClick={() => openQuery("")}
-                      >
-                        <Plus size={16} />
-                      </button>
+                        <Save size={13} />
+                        Salva file
+                      </Button>
+                      <Button onClick={showSaveFileAs} disabled={saveFileBusy}>
+                        Salva con nome
+                      </Button>
+                      <Button onClick={saveInLibrary}>Salva in libreria</Button>
+                      {activeDocument.path && (
+                        <Button onClick={() => void reloadCurrentFile()}>
+                          Ricarica file
+                        </Button>
+                      )}
                     </div>
+                    {documentFileErrors[activeDocumentId] && (
+                      <Notice tone="error">
+                        {documentFileErrors[activeDocumentId]}{" "}
+                        <button
+                          className="text-button"
+                          onClick={showSaveFileAs}
+                        >
+                          Salva una copia con nome
+                        </button>
+                      </Notice>
+                    )}
+                    {scriptAnalysis?.nativeClientRequired && (
+                      <Notice tone="warning">
+                        {scriptAnalysis.warnings.join(" ")}{" "}
+                        {activeDocument.path && (
+                          <button
+                            className="text-button"
+                            onClick={() => {
+                              setImportScriptPath(activeDocument.path!);
+                              setView("transfer");
+                            }}
+                          >
+                            Apri importazione guidata
+                          </button>
+                        )}
+                      </Notice>
+                    )}
+                    {(activeDocument.kind === "mongodb") !==
+                      (engine === "mongodb") && (
+                      <Notice tone="warning">
+                        La scheda contiene{" "}
+                        {activeDocument.kind === "mongodb"
+                          ? "comandi MongoDB"
+                          : "SQL"}
+                        ; scegli una connessione dello stesso tipo prima di
+                        eseguire.
+                      </Notice>
+                    )}
+                    {activeDocument.partial && (
+                      <Notice tone="warning">
+                        Bozza estratta da codice dinamico: completa valori e
+                        sintassi prima di eseguire. Il file sorgente rimane
+                        separato dalla query.
+                      </Notice>
+                    )}
                     {showParameters && (
                       <div className="parameters-panel">
                         <Field
@@ -1427,17 +2502,45 @@ export default function App() {
                     >
                       <Editor
                         value={query}
-                        language={engine === "mongodb" ? "json" : "sql"}
+                        language={
+                          activeDocument.kind === "mongodb" ? "json" : "sql"
+                        }
                         theme={dark ? "vs-dark" : "light"}
-                        onChange={(value) => setQuery(value || "")}
+                        path={`query-document-${activeDocumentId}.${activeDocument.kind === "mongodb" ? "json" : "sql"}`}
+                        saveViewState
+                        keepCurrentModel
+                        onChange={(value) => {
+                          const next = value || "";
+                          try {
+                            checkDocumentCapacity(
+                              documentSnapshot.filter(
+                                (d) => d.id !== activeDocumentId,
+                              ),
+                              { ...activeDocument, content: next },
+                            );
+                            setQuery(next);
+                          } catch (e) {
+                            notify(errorMessage(e), true);
+                          }
+                        }}
                         onMount={(editor, monaco) => {
                           editorRef.current = editor;
-                          sqlToolsRef.current?.dispose();
-                          sqlToolsRef.current = installSqlLanguage(
-                            monaco,
-                            editor,
-                            () => sqlContextRef.current,
-                          );
+                          monacoApiRef.current = monaco;
+                          const bindSqlTools = () => {
+                            sqlToolsRef.current?.dispose();
+                            sqlToolsRef.current = installSqlLanguage(
+                              monaco,
+                              editor,
+                              () => sqlContextRef.current,
+                            );
+                          };
+                          bindSqlTools();
+                          const modelListener =
+                            editor.onDidChangeModel(bindSqlTools);
+                          editor.onDidDispose(() => {
+                            modelListener.dispose();
+                            sqlToolsRef.current?.dispose();
+                          });
                           editor.onDidChangeCursorSelection(() => {
                             const model = editor.getModel(),
                               selection = editor.getSelection();
@@ -1482,6 +2585,40 @@ export default function App() {
                             }
                           }
 
+                          editor.addAction({
+                            id: "database-open-file",
+                            label: "Apri file e database",
+                            keybindings: [
+                              monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyO,
+                            ],
+                            run: () => openFilesRef.current(),
+                          });
+                          editor.addAction({
+                            id: "database-save-file",
+                            label: "Salva documento",
+                            keybindings: [
+                              monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+                            ],
+                            run: () => saveRef.current(),
+                          });
+                          editor.addAction({
+                            id: "database-save-file-as",
+                            label: "Salva documento con nome",
+                            keybindings: [
+                              monaco.KeyMod.CtrlCmd |
+                                monaco.KeyMod.Shift |
+                                monaco.KeyCode.KeyS,
+                            ],
+                            run: () => saveAsRef.current(),
+                          });
+                          editor.addAction({
+                            id: "database-close-document",
+                            label: "Chiudi documento",
+                            keybindings: [
+                              monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyW,
+                            ],
+                            run: () => closeDocumentRef.current(),
+                          });
                           editor.addAction({
                             id: "database-run-query",
                             label: "Esegui query",
@@ -1678,8 +2815,8 @@ export default function App() {
                               className={
                                 resultIndex === index ? "selected" : ""
                               }
-                              onClick={() => {
-                                if (canLeaveChanges()) {
+                              onClick={async () => {
+                                if (await canLeaveChanges()) {
                                   setResultIndex(index);
                                   setChanges(new Map());
                                 }
@@ -1840,10 +2977,14 @@ export default function App() {
                         <div className="row">
                           <Button
                             variant="primary"
-                            onClick={() => setProfileDialog(null)}
+                            onClick={() => openNewConnection()}
                           >
                             <Cable size={15} />
                             Collega database
+                          </Button>
+                          <Button onClick={() => showFileCenter(true)}>
+                            <FolderOpen size={15} />
+                            Apri database o file esistente
                           </Button>
                           <Button onClick={quickLab} busy={connecting}>
                             <FlaskConical size={15} />
@@ -1928,8 +3069,8 @@ export default function App() {
                 </div>
                 {showElements && (
                   <QueryElementsPanel
-                    engine={engine}
-                    schema={schema}
+                    engine={documentEngine}
+                    schema={documentSchema}
                     query={query}
                     selection={querySelection}
                     selectedTable={selectedTable?.name}
@@ -2112,7 +3253,9 @@ export default function App() {
                     title={
                       tableLoading
                         ? "Caricamento dati…"
-                        : "Scegli una tabella per leggere e modificare i dati"
+                        : profile?.readOnly
+                          ? "Scegli una tabella per leggere i dati"
+                          : "Scegli una tabella per leggere e modificare i dati"
                     }
                   >
                     <p>
@@ -2157,26 +3300,38 @@ export default function App() {
                 onCreated={(t) => void readTable(t, 0, "", false, "")}
               />
             )}
-            {view === "library" && (
-              <QueryLibraryView
-                engine={engine}
-                schema={schema}
-                savedQueries={boot.savedQueries}
-                history={boot.history}
-                onOpen={openLibraryEntry}
-                onInsert={(entry) =>
-                  insertQueryElement(entry.query, entry.parameters)
-                }
-                onExplain={(entry) =>
-                  setLesson({
-                    title: entry.title,
-                    analysis: explainQuery(entry.query, entry.engine, schema),
-                    text: entry.lesson,
-                  })
-                }
-                onFavorite={favorite}
-                onCreateDataset={quickLab}
-              />
+            {queryCatalogMounted && (
+              <div hidden={view !== "library"} className="catalog-page-host">
+                <QueryLibraryView
+                  engine={engine}
+                  schema={schema}
+                  savedQueries={boot.savedQueries}
+                  history={boot.history}
+                  onOpen={openLibraryEntry}
+                  onInsert={(entry) => {
+                    if (
+                      (entry.engine === "mongodb") !==
+                      (activeDocument.kind === "mongodb")
+                    ) {
+                      notify(
+                        "Questo esempio usa un linguaggio diverso dalla scheda attiva. Scegli Apri nell’editor per una nuova scheda.",
+                        true,
+                      );
+                      return;
+                    }
+                    insertQueryElement(entry.query, entry.parameters);
+                  }}
+                  onExplain={(entry) =>
+                    setLesson({
+                      title: entry.title,
+                      analysis: explainQuery(entry.query, entry.engine, schema),
+                      text: entry.lesson,
+                    })
+                  }
+                  onFavorite={favorite}
+                  onCreateDataset={quickLab}
+                />
+              </div>
             )}
             {view === "laboratory" && (
               <LabView
@@ -2200,10 +3355,28 @@ export default function App() {
                 query={query}
               />
             )}
+            {powerShellMounted && (
+              <div hidden={view !== "powershell"} className="catalog-page-host">
+                <Suspense
+                  fallback={
+                    <div className="loading-screen">
+                      <LoaderCircle className="spin" />
+                      Apertura del catalogo PowerShell…
+                    </div>
+                  }
+                >
+                  <PowerShellCatalogView
+                    dark={dark}
+                    active={view === "powershell"}
+                    onPreview={previewPowerShell}
+                  />
+                </Suspense>
+              </div>
+            )}
             {view === "codegen" && (
               <CodegenView
-                schema={schema}
-                engine={engine}
+                schema={documentSchema}
+                engine={documentEngine}
                 query={query}
                 mode={mode}
                 dark={dark}
@@ -2220,7 +3393,71 @@ export default function App() {
               />
             )}
             {view === "transfer" && (
-              <TransferView sessionId={sessionId} schema={schema} />
+              <div className="file-center-host">
+                <div className="connection-toolbar">
+                  <Cable size={16} />
+                  <select
+                    aria-label="Connessione destinazione importazione"
+                    value={profileId}
+                    onChange={(event) => {
+                      const next = boot.profiles.find(
+                        (p) => p.id === event.target.value,
+                      );
+                      if (next) void connect(next);
+                    }}
+                  >
+                    <option value="">Scegli la destinazione</option>
+                    {boot.profiles.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                        {p.readOnly ? " · sola lettura" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  {sessionId ? (
+                    <span className="connection-status">
+                      <span className="status-dot success" />
+                      Connesso · {schema?.database}
+                    </span>
+                  ) : (
+                    <Button
+                      onClick={() => void connect()}
+                      disabled={!profile}
+                      busy={connecting}
+                    >
+                      Connetti
+                    </Button>
+                  )}
+                  {profile?.readOnly && (
+                    <span className="badge">Sola lettura</span>
+                  )}
+                  <span className="spacer" />
+                  <Button onClick={() => openNewConnection()}>
+                    <Plus size={14} />
+                    Nuova connessione / database
+                  </Button>
+                </div>
+                <TransferView
+                  sessionId={sessionId}
+                  schema={schema}
+                  initialImportPath={importScriptPath}
+                  onBusyChange={setTransferBusy}
+                  onBeforeImport={() => {
+                    if (running) {
+                      notify("Attendi la fine della query.");
+                      return false;
+                    }
+                    return canLeaveChanges();
+                  }}
+                  onImported={(target) => {
+                    if (sessionIdRef.current !== target) return;
+                    setSelectedTable(null);
+                    setResult(null);
+                    setChanges(new Map());
+                    void refreshSchema();
+                  }}
+                />
+              </div>
             )}
             {view === "environments" && (
               <EnvironmentsView
@@ -2248,13 +3485,52 @@ export default function App() {
             </span>
           )}
           <span>{engine === "mongodb" ? "Extended JSON" : "SQL"}</span>
-          <span>UTF-8</span>
-          <button onClick={() => setView("laboratory")}>
+          <span
+            className={`recovery-status ${recoveryStatus}`}
+            role="status"
+            title={recoveryError || "Copia delle bozze nel workspace locale"}
+          >
+            {recoveryStatus === "saving" ? (
+              <LoaderCircle size={12} className="spin" />
+            ) : recoveryStatus === "error" ? (
+              <X size={12} />
+            ) : (
+              <ShieldCheck size={12} />
+            )}
+            {recoveryStatus === "saving"
+              ? "Conservo bozze…"
+              : recoveryStatus === "error"
+                ? "Recupero da verificare"
+                : "Bozze conservate"}
+          </span>
+          <button onClick={() => setGuideOpen(true)}>
             <HelpCircle size={12} />
             Guida
           </button>
         </footer>
       </main>
+      {guideOpen && (
+        <Modal
+          title="Guida operativa · PowerShell, database e codice"
+          wide
+          onClose={() => setGuideOpen(false)}
+        >
+          <GuideView
+            initialEngine={engine}
+            onOpenPowerShell={() => {
+              setGuideOpen(false);
+              setView("powershell");
+            }}
+            onOpenQuery={(code, targetEngine, title) => {
+              setGuideOpen(false);
+              void openFileQuery(code, title, undefined, {
+                kind: targetEngine === "mongodb" ? "mongodb" : "sql",
+                sourceOnly: true,
+              });
+            }}
+          />
+        </Modal>
+      )}
       {lesson && (
         <Modal title={lesson.title} onClose={() => setLesson(null)} wide>
           <div className="modal-body stack">
@@ -2324,6 +3600,7 @@ export default function App() {
       )}
       {profileDialog !== undefined && (
         <ProfileDialog
+          initialEngine={newConnectionEngine}
           profile={profileDialog || undefined}
           onClose={() => setProfileDialog(undefined)}
           onDeleted={(id) => {
@@ -2362,8 +3639,130 @@ export default function App() {
           }}
         />
       )}
+      {exitDialog && (
+        <Modal
+          title="Chiudi Database Manager"
+          onClose={() => !exitBusy && setExitDialog(false)}
+        >
+          <div className="modal-body stack">
+            {running || transferBusy || saveFileBusy || fileOperationBusy ? (
+              <Notice tone="warning">
+                È in corso un’operazione sui file o sul database. Attendi il
+                completamento oppure richiedi l’interruzione nell’editor prima
+                di chiudere.
+              </Notice>
+            ) : (
+              <p>
+                Le query e le schede saranno conservate come bozze nel
+                workspace.
+              </p>
+            )}
+            {fileCenterDirty.current && (
+              <Notice>
+                La bozza del centro file sarà conservata per la prossima
+                apertura. Il salvataggio sul file originale resta un’azione
+                separata.
+              </Notice>
+            )}
+            {changes.size > 0 && (
+              <Notice tone="warning">
+                Le modifiche della griglia non applicate saranno scartate. Per
+                conservarle, annulla e applicale prima di chiudere.
+              </Notice>
+            )}
+            {exitError && <Notice tone="error">{exitError}</Notice>}
+          </div>
+          <footer>
+            <Button onClick={() => setExitDialog(false)} disabled={exitBusy}>
+              Annulla
+            </Button>
+            <span className="spacer" />
+            <Button
+              variant="primary"
+              onClick={() => void closeApplication()}
+              busy={exitBusy}
+              disabled={
+                running ||
+                transferBusy ||
+                saveFileBusy ||
+                fileOperationBusy ||
+                !!fileRecoveryError ||
+                !!queryRecoveryError
+              }
+            >
+              {changes.size > 0
+                ? "Chiudi e scarta le modifiche non salvate"
+                : "Conserva bozze e chiudi"}
+            </Button>
+          </footer>
+        </Modal>
+      )}
+      {fileDropActive && (
+        <div className="file-drop-overlay">
+          Rilascia per aprire file e database
+        </div>
+      )}
+      {saveFileDialog && (
+        <Modal
+          title="Salva query su file"
+          onClose={() => !saveFileBusy && setSaveFileDialog(false)}
+        >
+          <div className="modal-body stack">
+            <Field label="Percorso del file">
+              <PathInput
+                value={saveFilePath}
+                onChange={(value) => {
+                  setSaveFilePath(value);
+                  setReplaceFile(false);
+                }}
+                kind="save"
+                filters={[
+                  {
+                    name: "Script SQL / MongoDB",
+                    extensions: ["sql", "mql", "json", "txt"],
+                  },
+                ]}
+              />
+            </Field>
+            <Notice>
+              Il salvataggio non esegue lo script. Per una query estratta da un
+              programma viene creato un documento separato.
+            </Notice>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={replaceFile}
+                onChange={(e) => setReplaceFile(e.target.checked)}
+              />
+              Consento di sostituire il file di testo esistente indicato, dopo
+              il controllo della sua versione.
+            </label>
+            {saveFileError && <Notice tone="error">{saveFileError}</Notice>}
+          </div>
+          <footer>
+            <Button
+              onClick={() => setSaveFileDialog(false)}
+              disabled={saveFileBusy}
+            >
+              Annulla
+            </Button>
+            <span className="spacer" />
+            <Button
+              variant="primary"
+              busy={saveFileBusy}
+              disabled={!saveFilePath.trim()}
+              onClick={() => void saveCurrentFile(saveFilePath.trim(), true)}
+            >
+              Salva file
+            </Button>
+          </footer>
+        </Modal>
+      )}
       {saveDialog && (
-        <Modal title="Salva query" onClose={() => setSaveDialog(false)}>
+        <Modal
+          title="Salva query"
+          onClose={() => !saveQueryBusy && setSaveDialog(false)}
+        >
           <div className="modal-body">
             <Field label="Nome della query">
               <input
@@ -2378,11 +3777,17 @@ export default function App() {
             </Field>
           </div>
           <footer>
-            <Button onClick={() => setSaveDialog(false)}>Annulla</Button>
+            <Button
+              onClick={() => setSaveDialog(false)}
+              disabled={saveQueryBusy}
+            >
+              Annulla
+            </Button>
             <div className="spacer" />
             <Button
               variant="primary"
               onClick={saveQuery}
+              busy={saveQueryBusy}
               disabled={!savedName.trim()}
             >
               <Save size={14} />

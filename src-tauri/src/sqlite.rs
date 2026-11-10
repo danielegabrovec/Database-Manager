@@ -18,12 +18,50 @@ pub fn open(profile: &ConnectionProfile) -> Result<Connection, String> {
     if profile.file_path.trim().is_empty() {
         return Err("Seleziona un file SQLite.".into());
     }
+    let memory = profile.file_path == ":memory:";
+    let path = Path::new(&profile.file_path);
+    let mut created = false;
+    if !memory {
+        if path.exists() {
+            crate::workspace_files::validate_sqlite_header(path)?;
+        } else {
+            if !profile.create_if_missing {
+                return Err("Il file SQLite non esiste. Scegliere Apri esistente oppure Crea nuovo in modo esplicito; nessun database vuoto è stato creato.".into());
+            }
+            if profile.read_only {
+                return Err("Non è possibile creare un database in sola lettura.".into());
+            }
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map_err(|e| e.to_string())?;
+            created = true;
+        }
+    }
     let flags = if profile.read_only {
         OpenFlags::SQLITE_OPEN_READ_ONLY
     } else {
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
+        OpenFlags::SQLITE_OPEN_READ_WRITE
     };
-    let conn = Connection::open_with_flags(&profile.file_path, flags).map_err(|e| e.to_string())?;
+    let opened = (|| {
+        let conn =
+            Connection::open_with_flags(&profile.file_path, flags).map_err(|e| e.to_string())?;
+        if created {
+            conn.pragma_update(None, "user_version", 0)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok::<_, String>(conn)
+    })();
+    let conn = match opened {
+        Ok(connection) => connection,
+        Err(e) => {
+            if created {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(e);
+        }
+    };
     conn.busy_timeout(Duration::from_secs(5))
         .map_err(|e| e.to_string())?;
     conn.pragma_update(None, "foreign_keys", true)

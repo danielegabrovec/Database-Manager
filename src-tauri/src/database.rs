@@ -141,7 +141,7 @@ async fn ssh_tunnel(
     Err("Timeout apertura tunnel SSH.".into())
 }
 impl Session {
-    pub async fn open(profile: ConnectionProfile, password: String) -> Result<Self, String> {
+    pub async fn open(mut profile: ConnectionProfile, password: String) -> Result<Self, String> {
         let (p, tunnel) = ssh_tunnel(&profile).await?;
         let handle = match p.engine.as_str() {
             "sqlite" => {
@@ -149,6 +149,7 @@ impl Session {
                 let conn = tokio::task::spawn_blocking(move || sqlite::open(&copy))
                     .await
                     .map_err(|e| e.to_string())??;
+                profile.create_if_missing = false;
                 let interrupt = Arc::new(conn.get_interrupt_handle());
                 Handle::Sqlite {
                     conn: Arc::new(Mutex::new(conn)),
@@ -276,6 +277,11 @@ impl Session {
         parameters: BTreeMap<String, Value>,
     ) -> Result<QueryResult, String> {
         let _lock = self.serial.lock().await;
+        self.execute_unlocked(query, parameters).await
+    }
+    pub(crate) async fn execute_unlocked(
+        &self, query: &str, parameters: BTreeMap<String, Value>,
+    ) -> Result<QueryResult, String> {
         let start = Instant::now();
         let mongo_job = if matches!(self.handle, Handle::Mongo { .. }) {
             Some(format!("dbm-{}", uuid::Uuid::new_v4()))
@@ -408,6 +414,10 @@ impl Session {
         }
     }
     pub async fn introspect(&self) -> Result<SchemaSnapshot, String> {
+        let _lock = self.serial.lock().await;
+        self.introspect_unlocked().await
+    }
+    pub(crate) async fn introspect_unlocked(&self) -> Result<SchemaSnapshot, String> {
         if let Handle::Sqlite { conn, .. } = &self.handle {
             let c = conn.clone();
             let database = self.profile.file_path.clone();
@@ -472,7 +482,7 @@ impl Session {
         } else {
             "SELECT table_schema AS `schema`,table_name AS name,table_type AS kind FROM information_schema.tables WHERE table_schema=DATABASE() ORDER BY table_name"
         };
-        let objects = self.execute(sql, BTreeMap::new()).await?;
+        let objects = self.execute_unlocked(sql, BTreeMap::new()).await?;
         let mut tables = Vec::new();
         for row in objects
             .sets
@@ -489,7 +499,7 @@ impl Session {
             } else {
                 format!("SELECT column_name AS name,column_type AS data_type,is_nullable AS is_nullable,column_default AS default_value,column_key AS pk FROM information_schema.columns WHERE table_schema='{ns}' AND table_name='{escaped}' ORDER BY ordinal_position")
             };
-            let cr = self.execute(&colsql, BTreeMap::new()).await?;
+            let cr = self.execute_unlocked(&colsql, BTreeMap::new()).await?;
             let columns = cr
                 .sets
                 .first()
@@ -519,7 +529,7 @@ impl Session {
             } else {
                 format!("SELECT column_name AS col,referenced_table_name AS ref_table,referenced_column_name AS ref_col FROM information_schema.key_column_usage WHERE table_schema='{ns}' AND table_name='{escaped}' AND referenced_table_name IS NOT NULL")
             };
-            let fk = self.execute(&fk_sql, BTreeMap::new()).await?;
+            let fk = self.execute_unlocked(&fk_sql, BTreeMap::new()).await?;
             let foreign_keys = fk
                 .sets
                 .first()
@@ -539,7 +549,7 @@ impl Session {
             } else {
                 format!("SELECT index_name AS name,non_unique AS non_unique,column_name AS col FROM information_schema.statistics WHERE table_schema='{ns}' AND table_name='{escaped}' ORDER BY index_name,seq_in_index")
             };
-            let ir = self.execute(&index_sql, BTreeMap::new()).await?;
+            let ir = self.execute_unlocked(&index_sql, BTreeMap::new()).await?;
             let mut indexes: BTreeMap<String, IndexInfo> = BTreeMap::new();
             if let Some(set) = ir.sets.first() {
                 for r in &set.rows {
@@ -581,7 +591,7 @@ impl Session {
         } else {
             "SELECT routine_schema AS `schema`,routine_name AS name,LOWER(routine_type) AS kind,routine_definition AS definition FROM information_schema.routines WHERE routine_schema=DATABASE() UNION ALL SELECT trigger_schema AS `schema`,trigger_name AS name,'trigger' AS kind,action_statement AS definition FROM information_schema.triggers WHERE trigger_schema=DATABASE()"
         };
-        let extras = self.execute(extras, BTreeMap::new()).await?;
+        let extras = self.execute_unlocked(extras, BTreeMap::new()).await?;
         if let Some(set) = extras.sets.first() {
             for row in &set.rows {
                 tables.push(TableInfo {

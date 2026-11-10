@@ -3,6 +3,28 @@ use serde_json::json;
 use std::{path::PathBuf, process::Command};
 
 #[test]
+fn generated_schema_functions_cover_twelve_languages_and_execute_on_sqlite() {
+    let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("artifacts/qa-schema-code-20261110");
+    let sql="CREATE TABLE people(id INTEGER PRIMARY KEY,name TEXT); CREATE INDEX idx_people_name ON people(name);";
+    for language in ["rust","python","javascript","typescript","java","kotlin","csharp","go","php","ruby","c","cpp"] {
+        for engine in ["sqlite","postgresql","mysql","mariadb"] {
+            let request:WorkbenchRequest=serde_json::from_value(json!({"engine":engine,"language":language,"artifact":"schema","table":"people","columns":[],"query":sql})).unwrap();
+            let project=generate_workbench(request).unwrap();
+            assert_eq!(project.files.len(),3);
+            for file in project.files { let path=root.join(engine).join(language).join(file.path);std::fs::create_dir_all(path.parent().unwrap()).unwrap();std::fs::write(path,file.content).unwrap(); }
+        }
+    }
+    let python=root.join("sqlite/python");
+    std::fs::write(python.join("runner.py"),"import sqlite3\nfrom schema import apply_schema\nc=sqlite3.connect(':memory:')\nassert apply_schema(c)==2\nc.execute(\"INSERT INTO people VALUES(1,'città €')\")\nassert c.execute('SELECT name FROM people').fetchone()[0]=='città €'\nprint('Python schema: passed')\n").unwrap();
+    let result=Command::new("python").arg(python.join("runner.py")).output().unwrap();
+    assert!(result.status.success(),"{}",String::from_utf8_lossy(&result.stderr));
+    let js=root.join("sqlite/javascript");
+    std::fs::write(js.join("runner.mjs"),"import {DatabaseSync} from 'node:sqlite';\nimport {applySchema} from './schema.mjs';\nconst db=new DatabaseSync(':memory:');\nif(await applySchema(db)!==2) throw Error('schema count');\ndb.exec(\"INSERT INTO people VALUES(1,'città €')\");\nif(db.prepare('SELECT name FROM people').get().name!=='città €') throw Error('data');\nconsole.log('JS schema: passed');\n").unwrap();
+    let result=Command::new("node").arg(js.join("runner.mjs")).output().unwrap();
+    assert!(result.status.success(),"{}",String::from_utf8_lossy(&result.stderr));
+}
+
+#[test]
 fn generated_python_sqlite_read_runs_with_bound_values() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

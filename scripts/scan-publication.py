@@ -61,7 +61,7 @@ def inventory() -> tuple[list[Path], list[dict]]:
     add_tree(files, "src-tauri/capabilities", {".json", ".toml"})
     add_tree(files, "src-tauri/icons", {".png", ".ico"})
     add_tree(files, "docs", {".md", ".json", ".png", ".jpg", ".webp", ".svg"})
-    add_tree(files, "scripts", {".ps1", ".py", ".cmd", ".sh"})
+    add_tree(files, "scripts", {".ps1", ".py", ".cmd", ".sh", ".mjs"})
     add_tree(files, ".github", {".yml", ".yaml", ".md", ".json"})
     for name in ["Cargo.toml", "Cargo.lock", "build.rs", "tauri.conf.json"]:
         path = ROOT / "src-tauri" / name

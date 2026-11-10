@@ -19,8 +19,10 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 LEGAL = ROOT / "licenses"
-RELEASE_URL = "https://github.com/danielegabrovec/Database-Manager/releases/tag/v0.2.1"
-MPL_ASSET_URL = "https://github.com/danielegabrovec/Database-Manager/releases/download/v0.2.1/third-party-mpl-sources.zip"
+PROJECT_VERSION = json.loads((ROOT / "package.json").read_text(encoding="utf8"))["version"]
+RELEASE_TAG = "v" + PROJECT_VERSION
+RELEASE_URL = f"https://github.com/danielegabrovec/Database-Manager/releases/tag/{RELEASE_TAG}"
+MPL_ASSET_URL = f"https://github.com/danielegabrovec/Database-Manager/releases/download/{RELEASE_TAG}/third-party-mpl-sources.zip"
 LEGAL_NAME = re.compile(r"licen[cs]e|copying|copyright|notice|third[-_ ]?party[-_ ]?notices", re.I)
 
 def sha(data): return hashlib.sha256(data).hexdigest()
@@ -175,14 +177,14 @@ def mpl_source_archive(packages, output):
                 content=source.extractfile(member).read();payload.append((member.name,content));files.append({"path":member.name,"sha256":sha(content),"bytes":len(content)})
         entries.append({"name":name,"version":version,"license":"MPL-2.0","modified":False,"originalCrateSha256":expected,"sourceUrl":f"https://static.crates.io/crates/{name}/{name}-{version}.crate","files":files})
     output.mkdir(parents=True,exist_ok=True)
-    source_manifest={"schemaVersion":1,"releaseTag":"v0.2.1","scope":"Unmodified published source of five MPL-2.0 crates; excludes Database Manager original source and any server binary/toolchain.","packages":entries}
+    source_manifest={"schemaVersion":1,"releaseTag":RELEASE_TAG,"scope":f"Unmodified published source of {len(entries)} MPL-2.0 crates; excludes Database Manager original source and any server binary/toolchain.","packages":entries}
     payload.append(("SOURCES.json",(json.dumps(source_manifest,ensure_ascii=False,indent=2)+"\n").encode()))
     payload.append(("README.txt",b"MPL-2.0 third-party source availability\n\nThese are the unmodified regular files from the original five crates.io source archives, verified against Cargo.lock SHA-256. No runtime binaries or private build paths are included. SOURCES.json identifies versions, upstream source URLs, archive checksums and every included file. Package-specific source headers remain intact. Database Manager original code and its separate project license are not relicensed by this archive.\n"))
     archive_path=output / "third-party-mpl-sources.zip"
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=9) as archive:
         for name,content in sorted(payload):
             info=zipfile.ZipInfo(name,(2026,11,9,0,0,0));info.compress_type=zipfile.ZIP_DEFLATED;info.external_attr=0o100644<<16;archive.writestr(info,content)
-    public={"asset":"third-party-mpl-sources.zip","sha256":sha(archive_path.read_bytes()),"bytes":archive_path.stat().st_size,"packages":[{k:v for k,v in p.items() if k!="files"} for p in entries]}
+    public={"asset":"third-party-mpl-sources.zip","releaseTag":RELEASE_TAG,"releaseUrl":RELEASE_URL,"assetUrl":MPL_ASSET_URL,"sha256":sha(archive_path.read_bytes()),"bytes":archive_path.stat().st_size,"packages":[{k:v for k,v in p.items() if k!="files"} for p in entries]}
     write_json(output / "third-party-mpl-sources-manifest.json",public)
     return public
 
@@ -213,6 +215,7 @@ def verify_inventory(output):
     if sha(asset.read_bytes())!=inventory["mplSourceAsset"]["sha256"]:raise RuntimeError("MPL source ZIP checksum mismatch")
     with zipfile.ZipFile(asset) as archive:
         sources=json.loads(archive.read("SOURCES.json"))
+        if sources.get("releaseTag")!=RELEASE_TAG or inventory["mplSourceAsset"].get("releaseTag")!=RELEASE_TAG:raise RuntimeError("MPL source asset release tag differs from package.json")
         for package in sources["packages"]:
             for item in package["files"]:
                 if sha(archive.read(item["path"]))!=item["sha256"]:raise RuntimeError("MPL source file mismatch")
@@ -221,7 +224,7 @@ def verify_inventory(output):
     print(json.dumps({"verified":True,"packages":len(inventory["packages"]),"legalTextsChecked":count,"mplPackages":len(sources["packages"]),"sourceZipSha256":inventory["mplSourceAsset"]["sha256"],"privateBuildPathsInInventory":False},indent=2))
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument("--mpl-source-output",type=Path,default=ROOT / "artifacts/publication-20261109");parser.add_argument("--verify",action="store_true");args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument("--mpl-source-output",type=Path,default=ROOT / "artifacts/release-v050");parser.add_argument("--verify",action="store_true");args=parser.parse_args()
     if args.verify:return verify_inventory(args.mpl_source_output)
     LEGAL.mkdir(parents=True,exist_ok=True)
     metadata=metadata_windows();npm=npm_inventory();cargo,mpl=cargo_inventory(metadata)
@@ -230,7 +233,7 @@ def main():
     own=next(p for p in metadata["packages"] if p["id"] in metadata["workspace_members"])
     rows=npm+cargo
     missing=[{"ecosystem":p["ecosystem"],"name":p["name"],"version":p["version"],"scope":p["scope"]} for p in rows if not p["licenseTexts"] and p.get("installedForAudit",True)]
-    inventory={"schemaVersion":1,"generatedOn":date(2026,11,9).isoformat(),"project":{"name":project["name"],"version":project["version"],"authors":own.get("authors",[])},"target":"x86_64-pc-windows-msvc; default desktop features","scopeNote":"Locked application dependency inventory including build/dev tools. Does not assert that every listed package is linked or bundled into the installer.","lockSha256":{"package-lock.json":sha((ROOT/"package-lock.json").read_bytes()),"src-tauri/Cargo.lock":sha((ROOT/"src-tauri/Cargo.lock").read_bytes())},"packages":rows,"additionalBuildToolNotices":extra,"missingInstalledLicenseTexts":missing,"mplSourceAsset":source_asset}
+    inventory={"schemaVersion":1,"generatedOn":date.today().isoformat(),"project":{"name":project["name"],"version":project["version"],"authors":own.get("authors",[])},"target":"x86_64-pc-windows-msvc; default desktop features","scopeNote":"Locked application dependency inventory including build/dev tools. Does not assert that every listed package is linked or bundled into the installer.","lockSha256":{"package-lock.json":sha((ROOT/"package-lock.json").read_bytes()),"src-tauri/Cargo.lock":sha((ROOT/"src-tauri/Cargo.lock").read_bytes())},"packages":rows,"additionalBuildToolNotices":extra,"missingInstalledLicenseTexts":missing,"mplSourceAsset":source_asset}
     serialized=json.dumps(inventory,ensure_ascii=False,indent=2)
     # Never publish developer-machine paths present in cargo metadata.
     if re.search(r"[A-Za-z]:\\\\(?:Users|Program Files)|file:///",serialized):raise RuntimeError("Private/local path leaked into inventory")

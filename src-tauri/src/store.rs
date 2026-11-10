@@ -9,7 +9,9 @@ pub struct Store {
 impl Store {
     pub fn new(path: &Path) -> Result<Self, String> {
         let c = Connection::open(path).map_err(|e| e.to_string())?;
-        c.execute_batch("PRAGMA journal_mode=WAL;CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY,json TEXT NOT NULL);CREATE TABLE IF NOT EXISTS queries(id TEXT PRIMARY KEY,json TEXT NOT NULL);CREATE TABLE IF NOT EXISTS history(id TEXT PRIMARY KEY,json TEXT NOT NULL,at TEXT NOT NULL);CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY,json TEXT NOT NULL);INSERT OR IGNORE INTO settings VALUES(1,'{}');").map_err(|e|e.to_string())?;
+        // Flush committed workspace changes to the WAL before acknowledging a save.
+        c.pragma_update(None, "synchronous", "FULL").map_err(|e| e.to_string())?;
+        c.execute_batch("PRAGMA journal_mode=WAL;CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY,json TEXT NOT NULL);CREATE TABLE IF NOT EXISTS queries(id TEXT PRIMARY KEY,json TEXT NOT NULL);CREATE TABLE IF NOT EXISTS history(id TEXT PRIMARY KEY,json TEXT NOT NULL,at TEXT NOT NULL);CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY,json TEXT NOT NULL);INSERT OR IGNORE INTO settings VALUES(1,'{}');CREATE TABLE IF NOT EXISTS recent_workspace_files(path TEXT PRIMARY KEY,json TEXT NOT NULL,opened_at TEXT NOT NULL);").map_err(|e|e.to_string())?;
         Ok(Self { db: Mutex::new(c) })
     }
     fn read_list<T: serde::de::DeserializeOwned>(&self, sql: &str) -> Result<Vec<T>, String> {
@@ -31,6 +33,45 @@ impl Store {
             .into_iter()
             .find(|p| p.id == id)
             .ok_or("Connessione non trovata".into())
+    }
+    pub fn recent_workspace_files(
+        &self,
+    ) -> Result<Vec<crate::workspace_files::RecentFile>, String> {
+        self.read_list(
+            "SELECT json FROM recent_workspace_files ORDER BY opened_at DESC,path LIMIT 50",
+        )
+    }
+    pub fn remember_workspace_file(
+        &self,
+        file: &crate::workspace_files::WorkspaceFile,
+    ) -> Result<(), String> {
+        let recent = crate::workspace_files::RecentFile {
+            path: file.path.clone(),
+            name: file.name.clone(),
+            kind: file.kind,
+            encoding: file.encoding,
+            opened_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let connection = self.db.lock().map_err(|e| e.to_string())?;
+        connection.execute("INSERT INTO recent_workspace_files(path,json,opened_at) VALUES(?1,?2,?3) ON CONFLICT(path) DO UPDATE SET json=excluded.json,opened_at=excluded.opened_at",params![recent.path,serde_json::to_string(&recent).map_err(|e|e.to_string())?,recent.opened_at]).map_err(|e|e.to_string())?;
+        connection.execute("DELETE FROM recent_workspace_files WHERE path NOT IN (SELECT path FROM recent_workspace_files ORDER BY opened_at DESC,path LIMIT 50)",[]).map_err(|e|e.to_string())?;
+        Ok(())
+    }
+    pub fn remove_workspace_recent(&self, path: &str) -> Result<(), String> {
+        self.db
+            .lock()
+            .map_err(|e| e.to_string())?
+            .execute("DELETE FROM recent_workspace_files WHERE path=?1", [path])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    pub fn clear_workspace_recents(&self) -> Result<(), String> {
+        self.db
+            .lock()
+            .map_err(|e| e.to_string())?
+            .execute("DELETE FROM recent_workspace_files", [])
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
     pub fn save_profile(&self, p: &ConnectionProfile) -> Result<(), String> {
         self.db.lock().map_err(|e|e.to_string())?.execute("INSERT INTO profiles VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET json=excluded.json",params![p.id,serde_json::to_string(p).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
@@ -107,6 +148,23 @@ pub fn engines() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recovery_survives_reopening_and_unrelated_settings_updates() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("workspace.sqlite");
+        let recovery = json!({"version":1,"draft":"SELECT 'città';","document":{"fingerprint":"original","encoding":"utf-16le-bom"}});
+        {
+            let store = Store::new(&path).unwrap();
+            let db = store.db.lock().unwrap();
+            assert_eq!(db.pragma_query_value(None, "synchronous", |r| r.get::<_, i64>(0)).unwrap(), 2);
+            drop(db);
+            store.update_settings(json!({"fileRecovery":recovery,"queryWorkspace":{"version":1}})).unwrap();
+            store.update_settings(json!({"theme":"light"})).unwrap();
+        }
+        let restored = Store::new(&path).unwrap().settings().unwrap();
+        assert_eq!(restored["fileRecovery"], recovery);
+        assert_eq!(restored["theme"], "light");
+    }
     #[test]
     fn merges_settings_and_profiles_roundtrip() {
         let t = tempfile::tempdir().unwrap();

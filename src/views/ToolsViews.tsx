@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { WindowsServiceDialog } from "../components/WindowsServiceDialog";
 import {
@@ -31,6 +31,7 @@ import {
   SectionHeader,
 } from "../components/UI";
 import { PathInput } from "../components/PathInput";
+import { useConfirmation } from "../components/ConfirmationProvider";
 const AboutPanel = lazy(() =>
   import("../components/AboutPanel").then((module) => ({
     default: module.AboutPanel,
@@ -40,10 +41,19 @@ const AboutPanel = lazy(() =>
 export function TransferView({
   sessionId,
   schema,
+  initialImportPath,
+  onBeforeImport,
+  onImported,
+  onBusyChange,
 }: {
   sessionId: string;
   schema: SchemaSnapshot | null;
+  initialImportPath?: string;
+  onBeforeImport?: () => boolean | Promise<boolean>;
+  onImported?: (sessionId: string) => void;
+  onBusyChange?: (busy: boolean) => void;
 }) {
+  const confirm = useConfirmation();
   const [tab, setTab] = useState("export");
   const [table, setTable] = useState("");
   const [format, setFormat] = useState("csv");
@@ -54,7 +64,24 @@ export function TransferView({
   const [error, setError] = useState("");
   const [result, setResult] = useState("");
   const [previewFingerprint, setPreviewFingerprint] = useState("");
+  const [sourceFingerprint, setSourceFingerprint] = useState("");
+  const [pendingScriptImport, setPendingScriptImport] = useState(false);
+  const onBusyRef = useRef(onBusyChange);
+  onBusyRef.current = onBusyChange;
+  useEffect(() => {
+    onBusyRef.current?.(busy);
+    return () => onBusyRef.current?.(false);
+  }, [busy]);
   const [executablePath, setExecutablePath] = useState("");
+  useEffect(() => {
+    if (initialImportPath) {
+      setTab("import");
+      setFormat("sql");
+      setPath(initialImportPath);
+      setContent("");
+      setPreviewFingerprint("");
+    }
+  }, [initialImportPath]);
   const fingerprint = JSON.stringify([
     sessionId,
     table || schema?.tables[0]?.name,
@@ -62,15 +89,24 @@ export function TransferView({
     path,
     content,
   ]);
-  async function run(action = tab) {
-    if (
-      action === "import" &&
-      format === "sql" &&
-      !window.confirm(
-        `Eseguire lo script SQL sul database ${schema?.database || "selezionato"}? Rivedi prima DDL e modifiche nell'anteprima.`,
-      )
-    )
-      return;
+  useEffect(() => {
+    setSourceFingerprint("");
+  }, [fingerprint]);
+  async function run(action = tab, reviewedSql = false) {
+    if (action === "import") {
+      if (
+        previewFingerprint !== fingerprint ||
+        (format === "sql" && !sourceFingerprint)
+      ) {
+        setError("Genera una nuova anteprima prima di importare.");
+        return;
+      }
+      if (format === "sql" && !reviewedSql) {
+        setPendingScriptImport(true);
+        return;
+      }
+      if (onBeforeImport && !(await onBeforeImport())) return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -83,6 +119,7 @@ export function TransferView({
           confirmed:
             action === "restore" || (action === "import" && format === "sql"),
           executablePath,
+          sourceFingerprint: sourceFingerprint || undefined,
           sessionId,
           scope: table === "__database__" ? "database" : "table",
           table:
@@ -95,8 +132,19 @@ export function TransferView({
         },
       });
       setResult(pretty(response));
-      if (action === "previewImport") setPreviewFingerprint(fingerprint);
-      else if (action === "import") setPreviewFingerprint("");
+      if (action === "previewImport") {
+        setPreviewFingerprint(fingerprint);
+        if (
+          response &&
+          typeof response === "object" &&
+          "sourceFingerprint" in response
+        )
+          setSourceFingerprint(String(response.sourceFingerprint));
+      } else if (action === "import") {
+        setPreviewFingerprint("");
+        setSourceFingerprint("");
+        onImported?.(sessionId);
+      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -139,26 +187,28 @@ export function TransferView({
           <div className="form-grid">
             {["export", "import"].includes(tab) && (
               <>
-                <Field label="Tabella o collezione">
-                  <select
-                    value={table || schema?.tables[0]?.name || ""}
-                    onChange={(e) => setTable(e.target.value)}
-                  >
-                    <option value="" disabled>
-                      Apri una connessione
-                    </option>
-                    {format === "sql" && tab === "export" && (
-                      <option value="__database__">
-                        Intero database · schema e dati
+                {!(format === "sql" && tab === "import") && (
+                  <Field label="Tabella o collezione">
+                    <select
+                      value={table || schema?.tables[0]?.name || ""}
+                      onChange={(e) => setTable(e.target.value)}
+                    >
+                      <option value="" disabled>
+                        Apri una connessione
                       </option>
-                    )}
-                    {schema?.tables
-                      .filter((item) => item.columns.length > 0)
-                      .map((item) => (
-                        <option key={item.name}>{item.name}</option>
-                      ))}
-                  </select>
-                </Field>
+                      {format === "sql" && tab === "export" && (
+                        <option value="__database__">
+                          Intero database · schema e dati
+                        </option>
+                      )}
+                      {schema?.tables
+                        .filter((item) => item.columns.length > 0)
+                        .map((item) => (
+                          <option key={item.name}>{item.name}</option>
+                        ))}
+                    </select>
+                  </Field>
+                )}
                 <Field label="Formato">
                   <select
                     value={format}
@@ -242,6 +292,14 @@ export function TransferView({
               verifiche previste dal motore prima dell’operazione.
             </Notice>
           )}
+          {tab === "import" && format === "sql" && (
+            <Notice>
+              Lo script viene applicato al database connesso: comprende tutti i
+              suoi comandi, incluse creazioni e modifiche dello schema.
+              L’anteprima mostra il contenuto e verifica l’impronta del file;
+              non valida preventivamente ogni istruzione.
+            </Notice>
+          )}
           {tab === "import" && (
             <Button
               onClick={() => run("previewImport")}
@@ -249,7 +307,9 @@ export function TransferView({
               disabled={!sessionId || (!path.trim() && !content.trim())}
             >
               <SearchIcon />
-              Anteprima e verifica tipi
+              {format === "sql"
+                ? "Anteprima dello script"
+                : "Anteprima e verifica tipi"}
             </Button>
           )}
           <Button
@@ -260,12 +320,12 @@ export function TransferView({
               (!path.trim() && !(tab === "import" && content.trim())) ||
               (tab === "import" && previewFingerprint !== fingerprint)
             }
-            onClick={() => {
+            onClick={async () => {
               if (
                 tab !== "restore" ||
-                window.confirm(
+                (await confirm(
                   `Ripristinare il database ${schema?.database || "attivo"} dal backup ${path}? Il ripristino può sostituire dati esistenti.`,
-                )
+                ))
               )
                 void run(tab);
             }}
@@ -273,7 +333,9 @@ export function TransferView({
             {tab === "export"
               ? "Esporta dati"
               : tab === "import"
-                ? "Importa dati"
+                ? format === "sql"
+                  ? "Esegui script revisionato"
+                  : "Importa dati"
                 : tab === "backup"
                   ? "Crea backup"
                   : "Ripristina backup"}
@@ -320,6 +382,46 @@ export function TransferView({
           <pre className="code-preview">{result}</pre>
         </div>
       )}
+      {pendingScriptImport && (
+        <Modal
+          title="Conferma importazione SQL"
+          onClose={() => setPendingScriptImport(false)}
+        >
+          <div className="modal-body stack">
+            <p>
+              <strong>Database di destinazione</strong>
+              <br />
+              {schema?.database || "Connessione selezionata"}
+            </p>
+            <p>
+              <strong>Script</strong>
+              <br />
+              {path || "Contenuto SQL incollato"}
+            </p>
+            <Notice tone="warning">
+              Verranno eseguiti tutti i comandi dello script revisionato,
+              comprese modifiche ai dati e allo schema. Il file sarà verificato
+              nuovamente prima dell’esecuzione; il rollback dipende dal motore e
+              dallo script.
+            </Notice>
+          </div>
+          <footer>
+            <Button onClick={() => setPendingScriptImport(false)}>
+              Annulla
+            </Button>
+            <span className="spacer" />
+            <Button
+              variant="primary"
+              onClick={() => {
+                setPendingScriptImport(false);
+                void run("import", true);
+              }}
+            >
+              Esegui sul database
+            </Button>
+          </footer>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -336,6 +438,7 @@ function normalizeEnvironments(value: unknown): EnvironmentInfo[] {
   return [];
 }
 export function EnvironmentsView({ onChanged }: { onChanged: () => void }) {
+  const confirm = useConfirmation();
   const [items, setItems] = useState<EnvironmentInfo[]>([]);
   const [engine, setEngine] = useState<Engine>("postgresql");
   const [provider, setProvider] = useState("docker");
@@ -560,9 +663,9 @@ export function EnvironmentsView({ onChanged }: { onChanged: () => void }) {
                       className="icon-button"
                       aria-label="Rimuovi ambiente"
                       disabled={!!busy}
-                      onClick={() => {
+                      onClick={async () => {
                         if (
-                          window.confirm(
+                          await confirm(
                             `Rimuovere l’ambiente ${item.name || item.id}? Verranno applicate le verifiche sulle risorse appartenenti al programma.`,
                           )
                         )

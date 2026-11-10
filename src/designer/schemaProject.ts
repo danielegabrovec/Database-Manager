@@ -7,10 +7,12 @@ import {
 } from "../components/SchemaBuilders";
 
 export interface DesignColumn extends ColumnInfo {
+  sourceName?: string;
   unique?: boolean;
   autoIncrement?: boolean;
 }
 export interface DesignTable {
+  source?: TableInfo;
   position?: { x: number; y: number };
   id: string;
   name: string;

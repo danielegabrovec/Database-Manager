@@ -15,6 +15,7 @@ import "monaco-editor/languages/definitions/cpp/register";
 import "monaco-editor/languages/definitions/go/register";
 import "monaco-editor/languages/definitions/kotlin/register";
 import "monaco-editor/languages/definitions/ruby/register";
+import "monaco-editor/languages/definitions/powershell/register";
 import "monaco-editor/languages/definitions/markdown/register";
 import "monaco-editor/languages/features/json/register";
 import "monaco-editor/features/codeEditor/register";
@@ -32,7 +33,9 @@ import { loader } from "@monaco-editor/react";
 import editorWorker from "monaco-editor/editor/editor.worker.js?worker";
 import jsonWorker from "monaco-editor/languages/features/json/json.worker.js?worker";
 import App from "./App";
+import { ConfirmationProvider } from "./components/ConfirmationProvider";
 import "./styles.css";
+import "./refinements.css";
 
 self.MonacoEnvironment = {
   getWorker(_moduleId: string, label: string) {
@@ -42,6 +45,8 @@ self.MonacoEnvironment = {
 loader.config({ monaco: monaco as typeof import("monaco-editor") });
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <ConfirmationProvider>
+      <App />
+    </ConfirmationProvider>
   </React.StrictMode>,
 );

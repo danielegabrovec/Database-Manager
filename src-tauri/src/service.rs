@@ -5,13 +5,13 @@ use crate::{
     models::*,
     sqlite,
     store::{engines, Store},
-    tools,
+    tools, workspace_files,
 };
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Instant,
 };
 use tokio::sync::RwLock;
@@ -21,6 +21,7 @@ pub struct AppState {
     pub store: Store,
     pub sessions: RwLock<HashMap<String, Arc<Session>>>,
     pub environments: environment::EnvironmentManager,
+    open_file_requests: Mutex<VecDeque<String>>,
 }
 fn arg<'a>(v: &'a Value, k: &str) -> &'a str {
     v.get(k).and_then(Value::as_str).unwrap_or("")
@@ -44,6 +45,77 @@ fn set_password(id: &str, value: &str) -> Result<(), String> {
         .set_password(value)
         .map_err(|e| format!("Archivio credenziali Windows: {e}"))
 }
+struct SqlImportSnapshot {
+    path: PathBuf,
+}
+impl Drop for SqlImportSnapshot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+struct SqlSourceScan {
+    bytes: u64,
+    fingerprint: String,
+    preview: Vec<u8>,
+}
+/// Hash the exact full byte stream and optionally snapshot it. The display
+/// preview and transfer buffer are each capped at 64 KiB, independently of size.
+fn scan_sql_source(source: &Path, snapshot: Option<&Path>) -> Result<SqlSourceScan, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Write};
+    let mut input = std::fs::File::open(source).map_err(|e| e.to_string())?;
+    let before = input.metadata().map_err(|e| e.to_string())?;
+    if !before.is_file() {
+        return Err("Selezionare un normale file SQL.".into());
+    }
+    let mut output = match snapshot {
+        Some(path) => Some(
+            std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(path)
+                .map_err(|e| e.to_string())?,
+        ),
+        None => None,
+    };
+    let mut hash = Sha256::new();
+    let mut buffer = [0_u8; 65536];
+    let mut preview = Vec::with_capacity(65536);
+    let mut total = 0_u64;
+    loop {
+        let read = input.read(&mut buffer).map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(read as u64)
+            .ok_or("Dimensione script SQL non valida")?;
+        hash.update(&buffer[..read]);
+        if preview.len() < 65536 {
+            preview.extend_from_slice(&buffer[..read.min(65536 - preview.len())]);
+        }
+        if let Some(output) = &mut output {
+            output
+                .write_all(&buffer[..read])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    let after = input.metadata().map_err(|e| e.to_string())?;
+    if before.len() != after.len()
+        || total != after.len()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return Err("Lo script SQL è cambiato durante la lettura; ripetere l’anteprima.".into());
+    }
+    if let Some(output) = &mut output {
+        output.flush().map_err(|e| e.to_string())?;
+    }
+    Ok(SqlSourceScan {
+        bytes: total,
+        fingerprint: format!("sha256:{:x}", hash.finalize()),
+        preview,
+    })
+}
 pub fn default_data_dir() -> PathBuf {
     std::env::var_os("DBM_DATA_DIR")
         .map(PathBuf::from)
@@ -64,6 +136,7 @@ impl AppState {
             store,
             sessions: RwLock::new(HashMap::new()),
             environments,
+            open_file_requests: Mutex::new(VecDeque::new()),
         })
     }
     pub async fn session(&self, id: &str) -> Result<Arc<Session>, String> {
@@ -82,11 +155,76 @@ impl AppState {
     ) -> Result<SchemaSnapshot, String> {
         let s = Arc::new(Session::open(profile, secret).await?);
         let schema = s.introspect().await?;
+        if s.profile.engine == "sqlite" && s.profile.id.len() > 0 {
+            self.store.save_profile(&s.profile)?;
+        }
         self.sessions.write().await.insert(id, s);
         Ok(schema)
     }
     pub async fn call(&self, command: &str, args: Value) -> Result<Value, String> {
         match command {
+            "inspect_workspace_file" => {
+                let request: workspace_files::InspectFileRequest = decode(args)?;
+                let file =
+                    tokio::task::spawn_blocking(move || workspace_files::inspect_file(request))
+                        .await
+                        .map_err(|e| e.to_string())??;
+                self.store.remember_workspace_file(&file)?;
+                encode(file)
+            }
+            "save_workspace_text" | "create_workspace_text" => {
+                let request: workspace_files::SaveTextRequest = decode(args)?;
+                let file = tokio::task::spawn_blocking(move || workspace_files::save_text(request))
+                    .await
+                    .map_err(|e| e.to_string())??;
+                self.store.remember_workspace_file(&file)?;
+                encode(file)
+            }
+            "list_workspace_directory" => {
+                let path = arg(&args, "path").to_owned();
+                let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0);
+                let offset = usize::try_from(offset).map_err(|_| "Offset cartella non valido")?;
+                encode(
+                    tokio::task::spawn_blocking(move || {
+                        workspace_files::list_directory(&path, offset)
+                    })
+                    .await
+                    .map_err(|e| e.to_string())??,
+                )
+            }
+            "open_workspace_directory" => {
+                let path = arg(&args, "path").to_owned();
+                encode(
+                    tokio::task::spawn_blocking(move || workspace_files::open_directory(&path))
+                        .await
+                        .map_err(|e| e.to_string())??,
+                )
+            }
+            "reveal_workspace_file" => {
+                let path = arg(&args, "path").to_owned();
+                encode(
+                    tokio::task::spawn_blocking(move || workspace_files::reveal_file(&path))
+                        .await
+                        .map_err(|e| e.to_string())??,
+                )
+            }
+            "recent_workspace_files" => encode(self.store.recent_workspace_files()?),
+            "remove_workspace_recent" => {
+                self.store.remove_workspace_recent(arg(&args, "path"))?;
+                Ok(json!(true))
+            }
+            "clear_workspace_recents" => {
+                self.store.clear_workspace_recents()?;
+                Ok(json!(true))
+            }
+            "read_workspace_open_requests" => {
+                let mut queue = self
+                    .open_file_requests
+                    .lock()
+                    .map_err(|_| "Coda apertura file non disponibile")?;
+                encode(queue.drain(..).collect::<Vec<_>>())
+            }
+            "open_existing_sqlite" => self.open_existing_sqlite(&args).await,
             "bootstrap" => Ok(
                 json!({"profiles":self.store.profiles()?,"savedQueries":self.store.saved()?,"history":self.store.history()?,"settings":self.store.settings()?,"engines":engines()}),
             ),
@@ -160,6 +298,11 @@ impl AppState {
                     .introspect()
                     .await?,
             ),
+            "apply_schema_changes" => {
+                if !args["confirmed"].as_bool().unwrap_or(false) { return Err("Rivedi il piano strutturale e conferma l’applicazione.".into()); }
+                let expected: SchemaSnapshot = decode(args.get("expectedSchema").cloned().ok_or("Schema di confronto mancante")?)?;
+                encode(crate::schema_changes::apply(self.session(arg(&args,"sessionId")).await?, expected, arg(&args,"script").into(), args["rebuildSqlite"].as_bool().unwrap_or(false)).await?)
+            }
             "execute_query" => {
                 let s = self.session(arg(&args, "sessionId")).await?;
                 let query = arg(&args, "query");
@@ -418,6 +561,87 @@ impl AppState {
             }
             _ => Err(format!("Comando non riconosciuto: {command}")),
         }
+    }
+    pub fn queue_workspace_arguments(&self, arguments: &[String], cwd: &Path) -> usize {
+        let paths = workspace_files::paths_from_arguments(arguments, cwd);
+        let Ok(mut queue) = self.open_file_requests.lock() else {
+            return 0;
+        };
+        let mut added = 0;
+        for path in paths {
+            if queue.len() == workspace_files::MAX_OPEN_REQUESTS {
+                break;
+            }
+            if !queue.contains(&path) {
+                queue.push_back(path);
+                added += 1;
+            }
+        }
+        added
+    }
+    async fn open_existing_sqlite(&self, args: &Value) -> Result<Value, String> {
+        let selected = arg(args, "path").to_owned();
+        let selected_for_inspection = selected.clone();
+        let file = tokio::task::spawn_blocking(move || {
+            let path = workspace_files::canonical_existing_file(&selected_for_inspection)?;
+            workspace_files::inspect_file(workspace_files::InspectFileRequest {
+                path: workspace_files::path_string(&path)?,
+                encoding: None,
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        if file.kind != workspace_files::FileKind::Sqlite
+            || !file.sqlite.as_ref().is_some_and(|info| info.valid)
+        {
+            return Err("Il file selezionato non è un database SQLite valido. I file .sql e i sorgenti si aprono come testo; nessuno script è eseguito durante l’apertura.".into());
+        }
+        let canonical = PathBuf::from(&file.path)
+            .canonicalize()
+            .map_err(|e| e.to_string())?;
+        let read_only = args
+            .get("readOnly")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let mut profile = self
+            .store
+            .profiles()?
+            .into_iter()
+            .find(|p| {
+                p.engine == "sqlite"
+                    && !p.laboratory
+                    && p.read_only == read_only
+                    && PathBuf::from(&p.file_path).canonicalize().ok().as_ref() == Some(&canonical)
+            })
+            .unwrap_or_else(|| ConnectionProfile {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: file.name.clone(),
+                file_path: file.path.clone(),
+                database: file.name.clone(),
+                environment: "File esistente".into(),
+                read_only,
+                ..Default::default()
+            });
+        let name = arg(args, "profileName").trim();
+        if !name.is_empty() {
+            if name.len() > 120 || name.chars().any(char::is_control) {
+                return Err("Nome profilo non valido.".into());
+            }
+            profile.name = name.into();
+        }
+        profile.file_path = file.path.clone();
+        profile.create_if_missing = false;
+        let session = Arc::new(Session::open(profile, String::new()).await?);
+        let schema = session.introspect().await?;
+        let profile = session.profile.clone();
+        self.store.save_profile(&profile)?;
+        self.store.remember_workspace_file(&file)?;
+        let session_id = uuid::Uuid::new_v4().to_string();
+        self.sessions
+            .write()
+            .await
+            .insert(session_id.clone(), session);
+        Ok(json!({"profile":profile,"sessionId":session_id,"schema":schema}))
     }
     async fn lab_open(&self, args: &Value) -> Result<Value, String> {
         let engine = if arg(args, "engine").is_empty() {
@@ -1137,7 +1361,6 @@ impl AppState {
         Ok(json!({"rows":result.affected_rows,"message":result.message}))
     }
     async fn transfer_sql(&self, r: &Value, s: Arc<Session>) -> Result<Value, String> {
-        use std::io::Read;
         if s.profile.engine == "mongodb" {
             return Err("Per MongoDB usa Extended JSON; gli script mongosh si generano nel Generatore codice.".into());
         }
@@ -1256,17 +1479,40 @@ impl AppState {
             return Err("Seleziona un file SQL o incolla lo script.".into());
         }
         if arg(r, "action") == "previewImport" {
-            let mut file = std::fs::File::open(&source).map_err(|e| e.to_string())?;
-            let size = file.metadata().map_err(|e| e.to_string())?.len();
-            let mut preview = vec![0; size.min(65536) as usize];
-            file.read_exact(&mut preview).map_err(|e| e.to_string())?;
+            let preview_source = source.clone();
+            let inspected =
+                tokio::task::spawn_blocking(move || scan_sql_source(&preview_source, None))
+                    .await
+                    .map_err(|e| e.to_string())??;
             return Ok(
-                json!({"path":source,"bytes":size,"scriptPreview":String::from_utf8_lossy(&preview),"truncated":size>65536,"notes":"Lo script viene eseguito sul database selezionato. Rivedere DDL, DROP, USE e transazioni; l'atomicità dipende dal motore e dallo script."}),
+                json!({"path":source,"bytes":inspected.bytes,"sourceFingerprint":inspected.fingerprint,"scriptPreview":String::from_utf8_lossy(&inspected.preview),"truncated":inspected.bytes>65536,"notes":"Lo script viene eseguito sul database selezionato. Rivedere DDL, DROP, USE e transazioni; l'atomicità dipende dal motore e dallo script."}),
             );
         }
         if !r["confirmed"].as_bool().unwrap_or(false) {
             return Err("Conferma l'esecuzione dello script dopo l'anteprima.".into());
         }
+        let expected = arg(r, "sourceFingerprint");
+        if expected.is_empty() {
+            return Err(
+                "Ripetere l’anteprima SQL prima di confermare: impronta del contenuto mancante."
+                    .into(),
+            );
+        }
+        let verified_source = SqlImportSnapshot {
+            path: artifacts.join(format!("verified-import-{}.sql", uuid::Uuid::new_v4())),
+        };
+        let snapshot = verified_source.path.clone();
+        let original = source.clone();
+        let inspected =
+            tokio::task::spawn_blocking(move || scan_sql_source(&original, Some(&snapshot)))
+                .await
+                .map_err(|e| e.to_string())??;
+        if inspected.fingerprint != expected {
+            return Err("CONFLITTO_SCRIPT: il contenuto SQL è cambiato dopo l’anteprima. Nessuna istruzione è stata eseguita; ripetere l’anteprima.".into());
+        }
+        // Execute the immutable-to-this-workflow snapshot, not a path that an
+        // external editor could replace between verification and client startup.
+        let source = verified_source.path.clone();
         if let Handle::Sqlite { conn, .. } = &s.handle {
             let c = conn.clone();
             return encode(

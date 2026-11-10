@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "generatedOn": "2026-11-09",
+  "generatedOn": "2026-11-10",
   "project": {
     "name": "database-manager",
-    "version": "0.2.1",
+    "version": "0.5.0",
     "authors": [
       "Daniele Gabrovec"
     ]
@@ -11,8 +11,8 @@
   "target": "x86_64-pc-windows-msvc; default desktop features",
   "scopeNote": "Locked application dependency inventory including build/dev tools. Does not assert that every listed package is linked or bundled into the installer.",
   "lockSha256": {
-    "package-lock.json": "b24bd3b4455aafe5191dcb61f7a960cf817df77c78baf8e95011980aa879d4a1",
-    "src-tauri/Cargo.lock": "e6dfad5c8c78e49c4773c6da6866b0ad554cb5c718008a869ec4d82864b38bb4"
+    "package-lock.json": "f0dd83b24d03740bef2867f8538128c689b84fbe156521eb5601671d51b849a4",
+    "src-tauri/Cargo.lock": "9ec6e43e05af24f0761f770e5bc1cb78b7867606640a65d5635a217e64ba2a85"
   },
   "packages": [
     {
@@ -14918,8 +14918,11 @@
   "missingInstalledLicenseTexts": [],
   "mplSourceAsset": {
     "asset": "third-party-mpl-sources.zip",
-    "sha256": "697774fb5e8ba4edb73cb1acc97ef87e906aadd4fbb7c430ee82ccfe7b8f46aa",
-    "bytes": 175933,
+    "releaseTag": "v0.5.0",
+    "releaseUrl": "https://github.com/danielegabrovec/Database-Manager/releases/tag/v0.5.0",
+    "assetUrl": "https://github.com/danielegabrovec/Database-Manager/releases/download/v0.5.0/third-party-mpl-sources.zip",
+    "sha256": "d01e4f510daf2ed43aad44770c86dfec752970f00a940fbf02f08a791f8de635",
+    "bytes": 175931,
     "packages": [
       {
         "name": "cssparser",

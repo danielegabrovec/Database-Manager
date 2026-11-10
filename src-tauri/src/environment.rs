@@ -108,16 +108,20 @@ pub struct EnvironmentManager {
 
 impl EnvironmentManager {
     pub fn new(app_data: PathBuf) -> Result<Self> {
+        #[cfg(debug_assertions)]
         let development_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join("artifacts")
             .join("cache");
-        let archive_cache = if cfg!(debug_assertions) && development_cache.is_dir() {
+        #[cfg(debug_assertions)]
+        let archive_cache = if development_cache.is_dir() {
             development_cache
         } else {
             app_data.join("native-downloads")
         };
+        #[cfg(not(debug_assertions))]
+        let archive_cache = app_data.join("native-downloads");
         Self::with_archive_cache(app_data, archive_cache)
     }
 
@@ -599,7 +603,13 @@ impl EnvironmentManager {
         let result = match environment.provider {
             Provider::Existing => Ok(()),
             Provider::Sqlite => {
-                rusqlite::Connection::open(&environment.endpoint).map_err(err)?;
+                let new_file = !Path::new(&environment.endpoint).exists();
+                let connection = rusqlite::Connection::open(&environment.endpoint).map_err(err)?;
+                if new_file {
+                    connection
+                        .pragma_update(None, "user_version", 0)
+                        .map_err(err)?;
+                }
                 Ok(())
             }
             Provider::Docker => {

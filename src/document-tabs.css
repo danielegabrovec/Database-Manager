@@ -1,0 +1,102 @@
+.document-tab-strip {
+  display: flex;
+  gap: 2px;
+  align-items: stretch;
+  overflow-x: auto;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  padding: 5px 5px 0;
+  flex: none;
+}
+.document-tab {
+  display: flex;
+  align-items: center;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  min-width: 120px;
+  max-width: 260px;
+  flex: none;
+  color: var(--muted);
+}
+.document-tab.active {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+}
+.document-tab > button[role="tab"] {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: 0;
+  color: inherit;
+  padding: 9px 5px 9px 10px;
+  cursor: pointer;
+  min-width: 0;
+}
+.document-tab > button[role="tab"] > span:first-of-type {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+.document-close {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  margin-right: 3px;
+  border-radius: 4px;
+}
+.document-close:hover {
+  background: var(--border);
+  color: var(--text);
+}
+.document-dirty {
+  color: var(--accent);
+  font-size: 10px;
+}
+.document-file-status {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+.file-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  border: 5px dashed var(--accent);
+  color: var(--text);
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.file-center-host:not([hidden]) {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+.primary-nav {
+  max-height: 46vh;
+  min-height: 160px;
+  overflow-y: auto;
+  flex: 0 1 auto;
+}
+.primary-nav > button {
+  flex-shrink: 0;
+}

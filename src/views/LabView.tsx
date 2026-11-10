@@ -12,6 +12,7 @@ import type { ConnectionProfile, Engine, SchemaSnapshot } from "../types";
 import { ENGINES, ENGINE_LABELS } from "../types";
 import { errorMessage, pretty } from "../utils";
 import { Button, Field, Notice, SectionHeader } from "../components/UI";
+import { useConfirmation } from "../components/ConfirmationProvider";
 
 interface Exercise {
   id: string;
@@ -53,6 +54,7 @@ export function LabView({
   query,
   laboratory,
 }: Props) {
+  const confirm = useConfirmation();
   const activeLaboratory = laboratory && !!currentSession && schema !== null;
   const [engine, setEngine] = useState<Engine>(schema?.engine || "sqlite");
   const [dataset, setDataset] = useState(
@@ -103,9 +105,9 @@ export function LabView({
   }
   async function reset() {
     if (
-      !window.confirm(
+      !(await confirm(
         "Ripristinare i dati iniziali di questo laboratorio? Le modifiche al dataset verranno perse.",
-      )
+      ))
     )
       return;
     setBusy("reset");

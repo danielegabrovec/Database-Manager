@@ -29,6 +29,8 @@ pub struct ConnectionProfile {
     pub ca_path: String,
     pub ssh: Option<SshConfig>,
     pub laboratory: bool,
+    #[serde(default)]
+    pub create_if_missing: bool,
 }
 impl Default for ConnectionProfile {
     fn default() -> Self {
@@ -47,6 +49,7 @@ impl Default for ConnectionProfile {
             ca_path: String::new(),
             ssh: None,
             laboratory: false,
+            create_if_missing: false,
         }
     }
 }

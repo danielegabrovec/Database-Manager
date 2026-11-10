@@ -1,6 +1,6 @@
-# Licenze delle dipendenze — rilascio Windows 0.2.1
+# Licenze delle dipendenze — rilascio Windows 0.5.0
 
-Inventario tecnico del 9 novembre 2026. Il codice originale di Database Manager è attribuito a **Daniele Gabrovec**; i relativi termini sono nei documenti `LICENSE`, `LEGAL.md` e `AUTHORS.md` del progetto. Le librerie, i dati e gli asset esterni conservano autori e condizioni originali. Questo documento non assegna a Daniele Gabrovec la proprietà dei componenti esterni.
+Inventario tecnico iniziale del 9 novembre 2026; metadati del rilascio 0.5.0 e hash dei lockfile aggiornati il 10 novembre 2026, senza variazioni delle dipendenze elencate. Il codice originale di Database Manager è attribuito a **Daniele Gabrovec**; i relativi termini sono nei documenti `LICENSE`, `LEGAL.md` e `AUTHORS.md` del progetto. Le librerie, i dati e gli asset esterni conservano autori e condizioni originali. Questo documento non assegna a Daniele Gabrovec la proprietà dei componenti esterni.
 
 ## Fonti e perimetro verificato
 
@@ -37,9 +37,11 @@ Queste sono istruzioni di conservazione riferite ai componenti osservati, non un
 | option-ext | 0.2.0 | [crate pubblicata](https://static.crates.io/crates/option-ext/option-ext-0.2.0.crate) |
 | selectors | 0.38.0 | [crate pubblicata](https://static.crates.io/crates/selectors/selectors-0.38.0.crate) |
 
-`third-party-mpl-sources.zip` contiene tutti i file regolari delle cinque crate pubblicate, senza modifiche. Gli archivi originali della cache Cargo sono stati confrontati con i checksum in `Cargo.lock`; `SOURCES.json` registra ogni file incluso. Non sono inclusi toolchain, runtime dei database o dati di QA. La fonte corrispondente viene offerta nell'[asset del rilascio v0.2.1](https://github.com/danielegabrovec/Database-Manager/releases/download/v0.2.1/third-party-mpl-sources.zip), richiamato anche dagli avvisi inclusi nell'app.
+`third-party-mpl-sources.zip` contiene tutti i file regolari delle cinque crate pubblicate, senza modifiche. Gli archivi originali della cache Cargo sono stati confrontati con i checksum in `Cargo.lock`; `SOURCES.json` registra ogni file incluso. Non sono inclusi toolchain, runtime dei database o dati di QA. La fonte corrispondente viene offerta nell'[asset del rilascio v0.5.0](https://github.com/danielegabrovec/Database-Manager/releases/download/v0.5.0/third-party-mpl-sources.zip), richiamato anche dagli avvisi inclusi nell'app.
 
-Hash dell'asset prodotto: `697774fb5e8ba4edb73cb1acc97ef87e906aadd4fbb7c430ee82ccfe7b8f46aa` (175.933 byte). I metadati sono in `artifacts/publication-20261109/third-party-mpl-sources-manifest.json`; questi file sono asset di rilascio, non cache da aggiungere indiscriminatamente al repository.
+Hash dell'asset 0.5.0 prodotto: `d01e4f510daf2ed43aad44770c86dfec752970f00a940fbf02f08a791f8de635` (175.931 byte). I metadati sono in `artifacts/release-v050/third-party-mpl-sources-manifest.json`; questi file sono asset di rilascio, non cache da aggiungere indiscriminatamente al repository.
+
+Il precedente asset locale v0.3.0 resta conservato sotto `artifacts/release-v030/`: SHA-256 `af1d4d50dd664166f0a9bab45ff07dea2b893832c205c4ea46003887b2f4eb4c`, 175.931 byte. Il [precedente asset v0.2.1](https://github.com/danielegabrovec/Database-Manager/releases/download/v0.2.1/third-party-mpl-sources.zip) resta il riferimento storico di quel rilascio: SHA-256 `697774fb5e8ba4edb73cb1acc97ef87e906aadd4fbb7c430ee82ccfe7b8f46aa`, 175.933 byte, copia locale originale sotto `artifacts/publication-20261109/`. Le cinque versioni e ogni file upstream sono invariati nei tre asset. Cambiano soltanto i metadati di confezionamento in `SOURCES.json`, incluso il tag del rilascio; il differente hash ZIP non indica modifiche ai sorgenti delle dipendenze.
 
 ## Cosa distribuire e cosa escludere
 
@@ -54,8 +56,8 @@ Il confronto con DBeaver e pgAdmin è documentazione analitica: non viene ridist
 ## Rigenerazione e verifica
 
 ```powershell
-python scripts/generate-third-party-notices.py
-python scripts/generate-third-party-notices.py --verify
+python scripts/generate-third-party-notices.py --mpl-source-output artifacts/release-v050
+python scripts/generate-third-party-notices.py --mpl-source-output artifacts/release-v050 --verify
 ```
 
-La prima operazione usa la cache dei package già installati, conserva i testi e produce l'asset sorgente MPL; non installa dipendenze né esegue codice upstream. La verifica controlla versione, hash dei due lockfile, presenza/integrità dei testi e ogni file del pacchetto sorgente MPL. Dopo una modifica alle dipendenze o ai lockfile, rigenerare prima di costruire e pubblicare un nuovo installer.
+La prima operazione usa la cache dei package già installati, conserva i testi e produce l'asset sorgente MPL; non installa dipendenze né esegue codice upstream. Versione, tag e URL del rilascio derivano da `package.json`. La verifica controlla versione, tag del pacchetto sorgente, hash dei due lockfile, presenza/integrità dei testi e ogni file del pacchetto sorgente MPL. Dopo una modifica alle dipendenze o ai lockfile, rigenerare prima di costruire e pubblicare un nuovo installer, scegliendo una cartella di output distinta per conservare gli asset storici.

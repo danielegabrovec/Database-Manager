@@ -1,0 +1,110 @@
+.workspace-navigation {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 10px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.workspace-navigation button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: left;
+}
+.workspace-navigation button > svg {
+  flex-shrink: 0;
+}
+.workspace-navigation button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-navigation button:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+.workspace-navigation button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.workspace-navigation .workspace-nav-item.active {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-color: var(--border);
+}
+.workspace-nav-groups {
+  margin: 3px 0;
+  padding: 3px 0;
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+}
+.workspace-navigation .workspace-nav-heading {
+  font-weight: 600;
+  color: var(--text);
+}
+.workspace-nav-heading.contains-active > svg:first-child {
+  color: var(--accent);
+}
+.workspace-nav-chevron {
+  margin-left: auto;
+  color: var(--subtle);
+  transform: rotate(-90deg);
+  transition: transform 120ms ease;
+}
+.workspace-nav-heading[aria-expanded="true"] .workspace-nav-chevron {
+  transform: rotate(0deg);
+}
+.workspace-nav-children {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 1px 0 3px 17px;
+  padding-left: 7px;
+  border-left: 1px solid var(--border);
+}
+.workspace-nav-children[hidden] {
+  display: none;
+}
+.workspace-navigation .workspace-nav-children button {
+  min-height: 31px;
+  padding: 5px 8px;
+  font-size: 12px;
+  gap: 7px;
+}
+.workspace-nav-item > small {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 7px;
+  letter-spacing: 0.5px;
+  color: var(--teal);
+}
+@media (max-height: 760px) {
+  .workspace-navigation {
+    gap: 0;
+    padding-bottom: 6px;
+  }
+  .workspace-navigation button {
+    min-height: 30px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+  .workspace-navigation .workspace-nav-children button {
+    min-height: 30px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-nav-chevron {
+    transition: none;
+  }
+}

@@ -1,6 +1,6 @@
 [package]
 name = "database-manager"
-version = "0.2.1"
+version = "0.5.0"
 description = "Ambiente database, laboratorio e generatore di codice"
 edition = "2021"
 authors = ["Daniele Gabrovec"]

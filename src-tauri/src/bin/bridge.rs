@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/{command}", post(rpc))
         .route(
             "/health",
-            get(|| async { Json(json!({"status":"ok","backend":"rust","version":"0.2.0"})) }),
+            get(|| async { Json(json!({"status":"ok","backend":"rust","version":env!("CARGO_PKG_VERSION")})) }),
         )
         .fallback_service(
             tower_http::services::ServeDir::new("../dist").append_index_html_on_directories(true),

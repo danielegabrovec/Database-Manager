@@ -1,1 +1,11 @@
-{"identifier":"main","description":"Finestra principale locale","windows":["main"],"permissions":["core:default","dialog:allow-open","dialog:allow-save"]}
+{
+  "identifier": "main",
+  "description": "Finestra principale locale",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "core:window:allow-destroy"
+  ]
+}

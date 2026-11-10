@@ -10,6 +10,7 @@ export interface ConnectionProfile {
   database: string;
   username: string;
   filePath: string;
+  createIfMissing?: boolean;
   environment: string;
   readOnly: boolean;
   tls: boolean;

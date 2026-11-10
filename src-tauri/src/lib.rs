@@ -9,10 +9,12 @@ pub mod mongo_cancel;
 pub mod mongo_edit;
 pub mod remote;
 pub mod service;
+pub mod schema_changes;
 pub mod sqlite;
 pub mod store;
 pub mod tools;
 pub mod windows_service;
+pub mod workspace_files;
 
 #[cfg(feature = "desktop")]
 mod desktop {
@@ -59,9 +61,16 @@ mod desktop {
                 return;
             }
         };
+        let arguments = std::env::args().collect::<Vec<_>>();
+        if let Ok(cwd) = std::env::current_dir() {
+            app.queue_workspace_arguments(&arguments, &cwd);
+        }
         tauri::Builder::default()
-            .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            .plugin(tauri_plugin_single_instance::init(|app, arguments, cwd| {
                 use tauri::Manager;
+                if let Some(state) = app.try_state::<Arc<AppState>>() {
+                    state.queue_workspace_arguments(&arguments, std::path::Path::new(&cwd));
+                }
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();

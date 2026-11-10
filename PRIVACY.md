@@ -8,6 +8,10 @@ Profili di connessione, preferenze, query salvate, cronologia e metadati del wor
 
 Password e chiavi dell'assistente sono conservate tramite il gestore credenziali del sistema dove previsto dall'applicazione. Query, cronologia, bozze, file esportati e altri contenuti locali possono comunque contenere dati riservati: il programma non promette la cifratura di tutti i file del workspace. Proteggere l'account Windows e le copie di sicurezza del computer.
 
+Il centro file legge e analizza i documenti localmente, senza eseguire i programmi aperti. I recenti conservano percorso, nome, tipo, codifica e data di apertura; non una copia completa del sorgente. Gli script e i frammenti portati nelle schede query possono essere conservati come bozze nel workspace, insieme ai parametri e ai riferimenti al file. La scrittura sull'originale richiede un salvataggio esplicito e verifica la versione letta. I comandi Esplora risorse affidano al sistema operativo il percorso scelto per aprire una cartella o mostrare un file.
+
+Dalla 0.5 anche il testo modificato nel centro file e gli script generati non ancora salvati hanno una copia di recupero locale. Questa copia può comprendere il testo originale e la bozza, percorso, codifica e fingerprint; viene conservata nel workspace e nella memoria della WebView entro i limiti dichiarati. Non viene inviata all’autore. Il salvataggio automatico della bozza non modifica il file originale. Le modifiche preparate nella griglia dei record richiedono invece Applica e non vengono recuperate dopo una chiusura.
+
 ## Connessioni e trasferimenti
 
 - Quando ci si collega a un database, query e dati vengono scambiati con il server selezionato dall'utente. TLS e tunnel dipendono dal profilo e dagli strumenti configurati.
@@ -21,4 +25,4 @@ Password e chiavi dell'assistente sono conservate tramite il gestore credenziali
 
 Questa descrizione riguarda il funzionamento del programma; non sostituisce le informative del titolare dei database o dei servizi esterni usati dall'utente.
 
-Ultimo aggiornamento: 9 novembre 2026.
+Ultimo aggiornamento: 10 novembre 2026.

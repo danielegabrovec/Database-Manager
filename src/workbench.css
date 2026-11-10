@@ -121,3 +121,16 @@
     overflow: auto;
   }
 }
+
+.catalog-page-host:not([hidden]) {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.breadcrumb-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}

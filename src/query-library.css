@@ -1,0 +1,226 @@
+.catalog-shell.qt-library {
+  gap: 14px;
+}
+.qt-library .qt-library-top {
+  flex: 0 0 auto;
+}
+.qt-library .qt-tabs {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  gap: 18px;
+}
+.qt-library .qt-tabs button {
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  padding: 9px 2px 11px;
+  background: transparent;
+}
+.qt-library .qt-tabs button.active {
+  border-bottom-color: var(--accent);
+  color: var(--accent-text);
+}
+.qt-library .qt-tabs button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.qt-library .qt-tabs button span {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--surface-raised);
+}
+.qt-library .qt-library-filters {
+  flex: 0 0 auto;
+  align-items: end;
+  gap: 10px;
+}
+.qt-library .qt-library-filters > .field {
+  flex: 0 1 160px;
+  min-width: 125px;
+  gap: 4px;
+  font-size: 10px;
+}
+.qt-library .qt-library-filters select {
+  min-height: 36px;
+  padding: 7px 9px;
+}
+.qt-library .qt-search {
+  min-height: 36px;
+  padding: 8px 11px;
+}
+.qt-library .qt-filter-toggle {
+  min-height: 36px;
+}
+.qt-filter-toggle.active {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.qt-filter-toggle > span {
+  font-size: 10px;
+  min-width: 16px;
+  border-radius: 3px;
+  background: var(--accent-soft);
+}
+.qt-library-extra-filters {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: end;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.qt-library-extra-filters[hidden] {
+  display: none;
+}
+.qt-library-extra-filters > .field {
+  flex: 0 1 230px;
+  gap: 5px;
+  font-size: 10px;
+}
+.qt-library-extra-filters select {
+  font-size: 11px;
+  min-height: 32px;
+  padding: 6px 9px;
+}
+.qt-schema-status {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  border-left: 2px solid var(--border);
+  padding: 2px 0 2px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.qt-schema-status > svg {
+  flex-shrink: 0;
+}
+.qt-schema-status > span {
+  flex: 1;
+}
+.qt-schema-status.demo {
+  border-left-color: var(--warning);
+}
+.qt-schema-status.ready {
+  border-left-color: var(--teal);
+}
+.qt-schema-status .button {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 5px 8px;
+  min-height: 27px;
+}
+.qt-library .qt-library-body {
+  flex: 1;
+  min-height: 0;
+  grid-template-columns: minmax(235px, 0.8fr) minmax(310px, 1.3fr);
+  gap: 14px;
+  align-items: stretch;
+}
+.qt-library .qt-query-list,
+.qt-library .qt-query-detail {
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.qt-library .qt-list-caption {
+  padding: 11px 12px;
+}
+.qt-library .qt-query-card-main {
+  padding: 12px 10px;
+  gap: 9px;
+}
+.qt-library .qt-query-card-main strong {
+  font-size: 12px;
+  line-height: 1.4;
+}
+.qt-library .qt-query-card-main small {
+  font-size: 10px;
+  line-height: 1.5;
+}
+.qt-library .qt-query-card-main > span:last-child {
+  gap: 5px;
+}
+.qt-library .qt-query-detail {
+  gap: 13px;
+  padding: 16px;
+}
+.qt-library .qt-detail-header h2 {
+  font-size: 18px;
+  line-height: 1.4;
+  margin: 5px 0;
+}
+.qt-library .qt-detail-header p {
+  font-size: 11px;
+}
+.qt-library .qt-code {
+  overflow: visible;
+  max-height: none;
+  flex-shrink: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.75;
+  padding: 13px;
+}
+.qt-library .qt-lesson {
+  padding: 11px 12px;
+}
+.qt-library .qt-lesson p {
+  font-size: 11px;
+  line-height: 1.7;
+}
+@media (max-width: 950px) {
+  .qt-library .qt-library-body {
+    grid-template-columns: minmax(195px, 0.8fr) minmax(260px, 1.2fr);
+    gap: 10px;
+  }
+  .qt-library .qt-query-detail {
+    padding: 12px;
+  }
+  .qt-library .qt-library-filters > .field {
+    flex: 0 1 125px;
+  }
+}
+@media (max-width: 760px) {
+  .view-content.catalog-shell.qt-library {
+    height: auto;
+    min-height: 100%;
+    overflow: visible;
+  }
+  .qt-library .qt-library-body {
+    display: flex;
+    flex-direction: column;
+    min-height: auto;
+  }
+  .qt-library .qt-query-list {
+    max-height: 240px;
+    flex: none;
+  }
+  .qt-library .qt-query-detail {
+    overflow: visible;
+  }
+  .qt-library .qt-library-filters > .qt-search {
+    flex-basis: 100%;
+  }
+  .qt-library-extra-filters {
+    flex-wrap: wrap;
+  }
+  .qt-schema-status {
+    flex-wrap: wrap;
+  }
+  .qt-library .qt-tabs {
+    gap: 12px;
+  }
+  .qt-library .qt-tabs button {
+    font-size: 11px;
+  }
+}

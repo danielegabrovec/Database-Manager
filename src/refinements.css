@@ -1,0 +1,280 @@
+/* Workbench sizing is based on the space beside the resizable explorer. */
+.sidebar .brand {
+  min-height: 65px;
+  height: 68px;
+  padding-top: 14px;
+  padding-bottom: 14px;
+  flex-shrink: 0;
+}
+.sidebar .global-search {
+  margin-bottom: 14px;
+  flex-shrink: 0;
+}
+.sidebar .workspace-navigation {
+  flex-shrink: 1;
+  min-height: 160px;
+  max-height: 38vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.sidebar .sidebar-section {
+  min-height: 120px;
+}
+.view-content.designer-workbench {
+  gap: 14px;
+  padding: 20px 24px;
+}
+.designer-workbench .designer-project-bar,
+.designer-workbench .designer-steps {
+  margin-bottom: 0;
+}
+.designer-workbench .section-header h1 {
+  font-size: 24px;
+}
+.designer-workbench .section-header p {
+  font-size: 12px;
+}
+.designer-workbench .schema-fields {
+  min-width: 720px;
+}
+.designer-workbench .schema-fields td:first-child input {
+  min-width: 120px;
+}
+.designer-workbench .schema-fields td:nth-child(2) input {
+  min-width: 120px;
+}
+.designer-workbench.designer-tab-relations {
+  height: 100%;
+  min-height: 600px;
+  margin: 0;
+  max-width: none;
+}
+.designer-tab-relations .section-header .eyebrow {
+  display: none;
+}
+.designer-tab-relations > .notice {
+  padding: 8px 12px;
+}
+.designer-tab-relations .designer-steps button {
+  padding: 9px 12px;
+}
+.designer-tab-relations > section.panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 300px;
+  padding: 14px;
+  gap: 10px;
+}
+.designer-tab-relations > section.panel > p {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.designer-tab-relations .designer-graph {
+  height: auto;
+  flex: 1;
+  min-height: 220px;
+}
+.design-graph-table strong {
+  background: var(--surface-raised);
+}
+.modal.full-screen {
+  width: calc(100vw - 32px);
+  height: calc(100vh - 32px);
+  max-width: none;
+  max-height: none;
+}
+.designer-expanded-canvas {
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  display: flex;
+}
+.designer-expanded-canvas .designer-graph {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+}
+.migration-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.migration-summary > div:not(.notice) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+  font-size: 13px;
+}
+.migration-summary > div > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-raised);
+  border-radius: 50%;
+  width: 25px;
+  height: 25px;
+}
+.migration-destructive strong {
+  margin-left: auto;
+  color: var(--warning);
+  font-size: 11px;
+}
+.main-content {
+  container: workspace / inline-size;
+}
+.recovery-banner {
+  padding: 10px 20px 0;
+}
+.recovery-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.recovery-status.error {
+  color: var(--danger);
+}
+.recovery-status.saved > svg {
+  color: var(--teal);
+}
+.fw-workspace .section-header p {
+  max-width: 78ch;
+  font-size: 13px;
+}
+.fw-workspace .section-header {
+  gap: 16px;
+}
+.fw-workspace .fw-entry-cards small,
+.fw-workspace .fw-file-item small,
+.fw-workspace .fw-file-item em,
+.fw-workspace .fw-help,
+.fw-workspace .fw-empty-small,
+.fw-workspace .fw-small-path,
+.fw-workspace .fw-inline-error,
+.fw-workspace .fw-document-header p,
+.fw-workspace .fw-document-meta,
+.fw-workspace .fw-preview-caption {
+  font-size: 12px;
+  line-height: 1.6;
+}
+.fw-workspace .fw-file-item strong,
+.fw-workspace .fw-side-tabs > button,
+.fw-workspace .fw-search input,
+.fw-workspace .fw-files-sidebar .button,
+.fw-workspace .fw-files-sidebar .field,
+.fw-workspace .fw-text-toolbar .field,
+.fw-workspace .fw-text-toolbar select,
+.fw-workspace .fw-text-actions .button {
+  font-size: 12px;
+}
+.fw-workspace .fw-file-item {
+  padding: 11px 7px;
+}
+.fw-workspace .fw-remove-recent {
+  min-width: 30px;
+  min-height: 30px;
+}
+.fw-workspace .fw-text-actions .button {
+  min-height: 34px;
+}
+.fw-has-document:not(.fw-catalog-preview) > .fw-entry-cards {
+  display: none;
+}
+.fw-workspace .fw-files-sidebar {
+  position: sticky;
+  top: 0;
+}
+.fw-workspace .fw-document {
+  scroll-margin-top: 16px;
+}
+.fw-document-header h2 em {
+  display: inline-block;
+  font-size: 11px;
+}
+.fw-preview-caption > span:last-child {
+  color: var(--teal);
+}
+.modal > footer {
+  flex-wrap: wrap;
+}
+.modal-body {
+  min-height: 0;
+}
+@container workspace (max-width: 850px) {
+  .fw-layout {
+    grid-template-columns: 220px minmax(0, 1fr);
+    gap: 12px;
+  }
+  .fw-entry-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .fw-document-header {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .fw-document-meta {
+    flex-direction: row;
+    gap: 12px;
+  }
+  .fw-workspace .section-header {
+    flex-wrap: wrap;
+  }
+  .ps-catalog-layout {
+    grid-template-columns: 205px minmax(0, 1fr);
+    gap: 16px;
+  }
+  .ps-script-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ps-parameter-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ps-catalog-filters {
+    grid-template-columns: minmax(150px, 1fr) minmax(120px, 160px);
+  }
+  .ps-detail-heading {
+    flex-wrap: wrap;
+  }
+}
+@container workspace (max-width: 650px) {
+  .fw-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .fw-files-sidebar {
+    position: static;
+    max-height: 240px;
+  }
+  .fw-path-bar > .field {
+    min-width: 100%;
+  }
+  .fw-path-bar > .button {
+    flex: 1;
+  }
+  .ps-catalog-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 150px minmax(180px, 1fr);
+    overflow-y: auto;
+  }
+  .ps-script-list {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 10px;
+  }
+  .catalog-heading {
+    flex-wrap: wrap;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

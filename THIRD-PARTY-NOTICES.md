@@ -1,4 +1,4 @@
-# Third-party notices — Database Manager 0.2.1
+# Third-party notices — Database Manager 0.5.0
 
 Database Manager's original application code is attributed to **Daniele Gabrovec**. The project's own terms are in `LICENSE` and `LEGAL.md`. Those terms do not replace the licenses or ownership notices of the third-party components below.
 
@@ -27,7 +27,7 @@ The locked Rust dependency graph includes these MPL-2.0 components:
 | option-ext | 0.2.0 |
 | selectors | 0.38.0 |
 
-Unmodified source for these exact versions is provided with the [v0.2.1 release](https://github.com/danielegabrovec/Database-Manager/releases/tag/v0.2.1) in [third-party-mpl-sources.zip](https://github.com/danielegabrovec/Database-Manager/releases/download/v0.2.1/third-party-mpl-sources.zip). Its `SOURCES.json` identifies every package, upstream source URL, original crate checksum and included file hash. The source archives are checked against `Cargo.lock`; existing source headers are preserved. This source-availability notice concerns those covered components, not a change to the license of Database Manager's separate original files. See the [MPL-2.0 text](https://www.mozilla.org/en-US/MPL/2.0/).
+Unmodified source for these exact versions is provided with the [v0.5.0 release](https://github.com/danielegabrovec/Database-Manager/releases/tag/v0.5.0) in [third-party-mpl-sources.zip](https://github.com/danielegabrovec/Database-Manager/releases/download/v0.5.0/third-party-mpl-sources.zip). Its `SOURCES.json` identifies every package, upstream source URL, original crate checksum and included file hash. The source archives are checked against `Cargo.lock`; existing source headers are preserved. This source-availability notice concerns those covered components, not a change to the license of Database Manager's separate original files. See the [MPL-2.0 text](https://www.mozilla.org/en-US/MPL/2.0/).
 
 ## Other component notices
 
@@ -47,7 +47,7 @@ Microsoft WebView2 and Windows system components remain subject to their own Mic
 After restoring the locked npm installation and Windows Cargo dependency cache, run:
 
 ```powershell
-python scripts/generate-third-party-notices.py
+python scripts/generate-third-party-notices.py --mpl-source-output artifacts/release-v040
 ```
 
 The script does not install packages, run dependency code, choose the original project's license or publish a release. See `docs/LICENZE-DIPENDENZE.md` for the audit scope and release packaging details.

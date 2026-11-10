@@ -455,6 +455,18 @@ function significant(text: string): Token[] {
     (token) => token.kind !== "comment" && token.kind !== "string",
   );
 }
+/** Keep offsets/newlines while excluding quoted text and comments from script checks. */
+export function maskSqlNonCode(text: string): string {
+  const parts: string[] = [];
+  let offset = 0;
+  for (const token of tokens(text)) {
+    if (!["string", "comment", "identifier"].includes(token.kind)) continue;
+    parts.push(text.slice(offset, token.start), token.text.replace(/[^\r\n]/g, " "));
+    offset = token.end;
+  }
+  parts.push(text.slice(offset));
+  return parts.join("");
+}
 function isSymbol(token: Token | undefined, value: string): boolean {
   return token?.kind === "symbol" && token.value === value;
 }

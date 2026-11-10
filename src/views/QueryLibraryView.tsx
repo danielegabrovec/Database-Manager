@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import type { KeyboardEvent } from "react";
 import {
   ArrowDownToLine,
   BookOpen,
@@ -10,6 +11,7 @@ import {
   ExternalLink,
   Lightbulb,
   Search,
+  SlidersHorizontal,
   Star,
 } from "lucide-react";
 import type {
@@ -19,7 +21,8 @@ import type {
   SchemaSnapshot,
 } from "../types";
 import { ENGINES, ENGINE_LABELS } from "../types";
-import { Button, Field, Notice, SectionHeader } from "../components/UI";
+import { Button, Field, Notice } from "../components/UI";
+import { CatalogShell } from "../components/CatalogShell";
 import {
   buildQueryCatalog,
   catalogAction,
@@ -35,6 +38,14 @@ import type {
 } from "../editor/queryCatalog";
 import { dataTables, explainQuery } from "../editor/sqlLanguage";
 import "../query-tools.css";
+import "../query-library.css";
+
+type QuerySource = "catalog" | "saved" | "history";
+const QUERY_SOURCES = [
+  ["catalog", "Esempi", BookOpen],
+  ["saved", "Query salvate", Star],
+  ["history", "Cronologia", Clock3],
+] as const;
 
 export interface QueryLibraryViewProps {
   engine: Engine;
@@ -69,9 +80,9 @@ export function QueryLibraryView({
   onFavorite,
   onCreateDataset,
 }: QueryLibraryViewProps) {
-  const [source, setSource] = useState<"catalog" | "saved" | "history">(
-    "catalog",
-  );
+  const tabPrefix = useId();
+  const [source, setSource] = useState<QuerySource>("catalog");
+  const [showFilters, setShowFilters] = useState(false);
   const [selectedEngine, setEngine] = useState(engine),
     [search, setSearch] = useState(""),
     [category, setCategory] = useState("all"),
@@ -172,36 +183,63 @@ export function QueryLibraryView({
     setExplanation(true);
     onExplain?.(entry.action);
   }
+  function chooseSource(next: QuerySource) {
+    setSource(next);
+    setFavorites(false);
+    setExplanation(false);
+  }
+  function handleTabKey(event: KeyboardEvent<HTMLDivElement>) {
+    const index = QUERY_SOURCES.findIndex(([id]) => id === source);
+    let nextIndex: number;
+    if (event.key === "ArrowRight")
+      nextIndex = (index + 1) % QUERY_SOURCES.length;
+    else if (event.key === "ArrowLeft")
+      nextIndex = (index + QUERY_SOURCES.length - 1) % QUERY_SOURCES.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = QUERY_SOURCES.length - 1;
+    else return;
+    event.preventDefault();
+    const next = QUERY_SOURCES[nextIndex][0];
+    chooseSource(next);
+    event.currentTarget
+      .querySelector<HTMLButtonElement>(`[data-source="${next}"]`)
+      ?.focus();
+  }
+  const filterCount =
+    source === "catalog"
+      ? Number(category !== "all") + Number(level !== "all")
+      : Number(source === "saved" && favoritesOnly);
   return (
-    <div className="view-content qt-library">
-      <SectionHeader
-        eyebrow="UN REPERTORIO DA USARE E CAPIRE"
-        title="Libreria query"
-        description="Esempi adattati allo schema, query salvate e cronologia. Aprire o inserire una query non la esegue."
-      />
+    <CatalogShell
+      className="qt-library"
+      title="Catalogo Query"
+      description="Scegli una query, leggila e aprila nell'editor. L'esecuzione resta una tua azione."
+      actions={
+        <span className="qt-offline">
+          <Lightbulb size={14} />
+          Guida offline
+        </span>
+      }
+    >
       <div className="qt-library-top">
         <div
           className="qt-tabs"
           role="tablist"
           aria-label="Origine delle query"
+          onKeyDown={handleTabKey}
         >
-          {(
-            [
-              ["catalog", "Catalogo", BookOpen],
-              ["saved", "Salvate", Star],
-              ["history", "Cronologia", Clock3],
-            ] as const
-          ).map(([id, label, Icon]) => (
+          {QUERY_SOURCES.map(([id, label, Icon]) => (
             <button
               key={id}
+              type="button"
               role="tab"
+              id={`${tabPrefix}-${id}-tab`}
+              aria-controls={`${tabPrefix}-panel`}
               aria-selected={source === id}
+              tabIndex={source === id ? 0 : -1}
+              data-source={id}
               className={source === id ? "active" : ""}
-              onClick={() => {
-                setSource(id);
-                setFavorites(false);
-                setExplanation(false);
-              }}
+              onClick={() => chooseSource(id)}
             >
               <Icon size={15} />
               {label}
@@ -218,19 +256,15 @@ export function QueryLibraryView({
             </button>
           ))}
         </div>
-        <span className="qt-offline">
-          <Lightbulb size={14} />
-          Spiegazioni offline · nessuna AI necessaria
-        </span>
       </div>
-      <div className="panel qt-library-filters">
+      <div className="qt-library-filters">
         <label className="qt-search">
           <Search size={16} />
           <input
-            aria-label="Cerca nella libreria query"
+            aria-label="Cerca nel Catalogo Query"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Cerca un'operazione, una clausola o del codice…"
+            placeholder="Cerca query, clausola o codice…"
           />
         </label>
         <Field label="Motore">
@@ -245,6 +279,38 @@ export function QueryLibraryView({
             ))}
           </select>
         </Field>
+        {source !== "history" && (
+          <Button
+            variant="ghost"
+            className={
+              showFilters ? "qt-filter-toggle active" : "qt-filter-toggle"
+            }
+            aria-expanded={showFilters}
+            aria-controls={`${tabPrefix}-filters`}
+            onClick={() => setShowFilters((value) => !value)}
+          >
+            <SlidersHorizontal size={14} />
+            Filtri{filterCount > 0 && <span>{filterCount}</span>}
+          </Button>
+        )}
+        {filterCount > 0 && (
+          <Button
+            variant="ghost"
+            onClick={() => {
+              setCategory("all");
+              setLevel("all");
+              setFavorites(false);
+            }}
+          >
+            Azzera
+          </Button>
+        )}
+      </div>
+      <div
+        id={`${tabPrefix}-filters`}
+        className="qt-library-extra-filters"
+        hidden={!showFilters || source === "history"}
+      >
         {source === "catalog" ? (
           <>
             <Field label="Categoria">
@@ -283,27 +349,23 @@ export function QueryLibraryView({
           </label>
         ) : null}
       </div>
-      {source === "catalog" && !schemaReady && (
-        <Notice>
-          <div className="qt-demo-notice">
-            <div>
-              <strong>
-                Gli esempi con tabelle attendono uno schema reale.
-              </strong>
-              <p>
-                Il catalogo mostra il dataset didattico «Negozio e ordini» come
-                riferimento, senza fingere che esista nella connessione. Apri il
-                laboratorio per provarlo.
-              </p>
-            </div>
-            {onCreateDataset && (
-              <Button onClick={onCreateDataset}>
-                <Database size={15} />
-                Apri dataset clienti e ordini
-              </Button>
-            )}
-          </div>
-        </Notice>
+      {source === "catalog" && (
+        <div
+          className={`qt-schema-status ${schemaReady ? "ready" : "demo"}`}
+          role="status"
+        >
+          <Database size={14} aria-hidden="true" />
+          <span>
+            {schemaReady
+              ? "Esempi adattati allo schema collegato."
+              : "Anteprima didattica «Negozio e ordini»: queste tabelle non sono lo schema della connessione."}
+          </span>
+          {!schemaReady && onCreateDataset && (
+            <Button variant="ghost" onClick={onCreateDataset}>
+              Apri laboratorio
+            </Button>
+          )}
+        </div>
       )}
       {selectedEngine !== engine && (
         <Notice tone="warning">
@@ -313,12 +375,15 @@ export function QueryLibraryView({
         </Notice>
       )}
       {error && <Notice tone="error">{error}</Notice>}
-      <div className="qt-library-body">
+      <div
+        className="qt-library-body"
+        role="tabpanel"
+        id={`${tabPrefix}-panel`}
+        aria-labelledby={`${tabPrefix}-${source}-tab`}
+      >
         <section className="panel qt-query-list" aria-label="Elenco query">
           <div className="qt-list-caption">
-            <strong>
-              {entries.length} {entries.length === 1 ? "query" : "query"}
-            </strong>
+            <strong>{entries.length} query</strong>
             <span>
               {source === "catalog"
                 ? "Dal semplice al composto"
@@ -621,7 +686,7 @@ export function QueryLibraryView({
           )}
         </section>
       </div>
-    </div>
+    </CatalogShell>
   );
 }
 function dateLabel(timestamp: string): string {

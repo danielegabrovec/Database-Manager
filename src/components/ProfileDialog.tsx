@@ -6,18 +6,22 @@ import type { ConnectionProfile, Engine } from "../types";
 import { errorMessage, newId } from "../utils";
 import { Button, Field, Modal, Notice } from "./UI";
 import { PathInput } from "./PathInput";
+import { useConfirmation } from "./ConfirmationProvider";
 
 export function ProfileDialog({
   profile,
+  initialEngine = "sqlite",
   onClose,
   onSaved,
   onDeleted,
 }: {
   profile?: ConnectionProfile;
+  initialEngine?: Engine;
   onClose: () => void;
   onSaved: (profile: ConnectionProfile) => void;
   onDeleted: (id: string) => void;
 }) {
+  const confirm = useConfirmation();
   const [form, setForm] = useState<ConnectionProfile>(
     profile
       ? {
@@ -35,12 +39,13 @@ export function ProfileDialog({
       : {
           id: newId(),
           name: "",
-          engine: "sqlite",
+          engine: initialEngine,
           host: "localhost",
-          port: 0,
+          port: ENGINE_PORTS[initialEngine],
           database: "",
           username: "",
           filePath: "",
+          createIfMissing: false,
           environment: "development",
           readOnly: false,
           tls: false,
@@ -176,23 +181,45 @@ export function ProfileDialog({
               </select>
             </Field>
             {form.engine === "sqlite" ? (
-              <Field
-                label="File SQLite"
-                hint="Il file viene creato se non esiste. :memory: crea un database temporaneo."
-              >
-                <PathInput
-                  value={form.filePath}
-                  onChange={(value) => patch("filePath", value)}
-                  kind="save"
-                  placeholder="C:\\Dati\\progetto.sqlite"
-                  filters={[
-                    {
-                      name: "Database SQLite",
-                      extensions: ["sqlite", "db", "sqlite3"],
-                    },
-                  ]}
-                />
-              </Field>
+              <div className="stack">
+                <Field label="Operazione sul file SQLite">
+                  <select
+                    value={form.createIfMissing ? "create" : "existing"}
+                    onChange={(e) =>
+                      setForm((old) => ({
+                        ...old,
+                        createIfMissing: e.target.value === "create",
+                        readOnly:
+                          e.target.value === "create" ? false : old.readOnly,
+                      }))
+                    }
+                  >
+                    <option value="existing">Apri un database esistente</option>
+                    <option value="create">Crea un nuovo database</option>
+                  </select>
+                </Field>
+                <Field
+                  label="File SQLite"
+                  hint={
+                    form.createIfMissing
+                      ? "Creazione esplicita: scegli un percorso nuovo. :memory: apre un database temporaneo."
+                      : "Scegli un file esistente. Un percorso inesistente produce un errore e non crea un database vuoto."
+                  }
+                >
+                  <PathInput
+                    value={form.filePath}
+                    onChange={(value) => patch("filePath", value)}
+                    kind={form.createIfMissing ? "save" : "open"}
+                    placeholder="C:\\Dati\\progetto.sqlite"
+                    filters={[
+                      {
+                        name: "Database SQLite",
+                        extensions: ["sqlite", "db", "sqlite3"],
+                      },
+                    ]}
+                  />
+                </Field>
+              </div>
             ) : (
               <>
                 <Field
@@ -340,9 +367,9 @@ export function ProfileDialog({
             disabled={!!busy}
             onClick={async () => {
               if (
-                !window.confirm(
+                !(await confirm(
                   "Rimuovere questa connessione dal workspace? Il database e i suoi dati rimangono al loro posto.",
-                )
+                ))
               )
                 return;
               setBusy("delete");

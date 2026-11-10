@@ -7,7 +7,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Test frontend non riusciti.' }
     & npm.cmd run build
     if ($LASTEXITCODE -ne 0) { throw 'Build frontend non riuscita.' }
-    & cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --lib
+    & cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features
     if ($LASTEXITCODE -ne 0) { throw 'Test Rust non riusciti.' }
     if ($Desktop) {
         & cargo check --manifest-path src-tauri/Cargo.toml --locked

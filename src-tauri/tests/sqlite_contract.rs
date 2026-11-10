@@ -11,6 +11,7 @@ async fn cancel_interrupts_real_sqlite_query() {
             .join("cancel.sqlite")
             .to_string_lossy()
             .to_string(),
+        create_if_missing: true,
         ..Default::default()
     };
     let session = Arc::new(Session::open(profile, String::new()).await.unwrap());
@@ -147,6 +148,7 @@ async fn sql_transfer_roundtrip_is_not_json_and_exports_respect_limits() {
         id: "import-target".into(),
         name: "Import target".into(),
         file_path: tmp.path().join("imported.sqlite").to_string_lossy().into(),
+        create_if_missing: true,
         ..Default::default()
     };
     state.store.save_profile(&profile).unwrap();
@@ -166,7 +168,7 @@ async fn sql_transfer_roundtrip_is_not_json_and_exports_respect_limits() {
         )
         .await
         .is_err());
-    state.call("transfer_data",json!({"request":{"sessionId":"target","action":"import","format":"sql","path":path,"confirmed":true}})).await.unwrap();
+    state.call("transfer_data",json!({"request":{"sessionId":"target","action":"import","format":"sql","path":path,"confirmed":true,"sourceFingerprint":preview["sourceFingerprint"]}})).await.unwrap();
     let result = state
         .call(
             "read_table",
@@ -192,4 +194,118 @@ async fn sql_transfer_roundtrip_is_not_json_and_exports_respect_limits() {
             )
         }
     }
+}
+
+#[tokio::test]
+async fn sql_import_requires_the_exact_previewed_full_file_before_any_ddl() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = AppState::new(tmp.path().join("app")).unwrap();
+    let profile = ConnectionProfile {
+        id: "fingerprint-target".into(),
+        name: "Fingerprint QA".into(),
+        file_path: tmp.path().join("target.sqlite").to_string_lossy().into(),
+        create_if_missing: true,
+        ..Default::default()
+    };
+    state.store.save_profile(&profile).unwrap();
+    state
+        .call(
+            "open_session",
+            json!({"profileId":profile.id,"sessionId":"fingerprint-target"}),
+        )
+        .await
+        .unwrap();
+    let path = tmp.path().join("input.sql");
+    let prefix = format!(
+        "CREATE TABLE fingerprint_prefix(id INTEGER);\n-- {}\n",
+        "padding".repeat(11_000)
+    );
+    let original = format!("{prefix}CREATE TABLE fingerprint_original_tail(id INTEGER);\n");
+    std::fs::write(&path, &original).unwrap();
+    let preview=state.call("transfer_data",json!({"request":{"sessionId":"fingerprint-target","action":"previewImport","format":"sql","path":path}})).await.unwrap();
+    assert_eq!(preview["truncated"], true);
+    assert_eq!(preview["scriptPreview"].as_str().unwrap().len(), 65536);
+    assert!(preview["sourceFingerprint"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+    // Only the tail outside the displayed 64 KiB changes; hashing a preview alone
+    // would miss this and permit even the first CREATE to execute unnoticed.
+    let changed = format!("{prefix}CREATE TABLE fingerprint_modified_tail(id INTEGER);\n");
+    assert_eq!(changed.len(), original.len());
+    std::fs::write(&path, &changed).unwrap();
+    let error=state.call("transfer_data",json!({"request":{"sessionId":"fingerprint-target","action":"import","format":"sql","path":path,"confirmed":true,"sourceFingerprint":preview["sourceFingerprint"]}})).await.unwrap_err();
+    assert!(error.contains("CONFLITTO_SCRIPT"));
+    let count = state
+        .session("fingerprint-target")
+        .await
+        .unwrap()
+        .execute(
+            "SELECT COUNT(*) AS n FROM sqlite_schema WHERE name LIKE 'fingerprint_%'",
+            BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(count.sets[0].rows[0]["n"].text(), "0");
+    assert!(state.call("transfer_data",json!({"request":{"sessionId":"fingerprint-target","action":"import","format":"sql","path":path,"confirmed":true}})).await.is_err());
+    let updated=state.call("transfer_data",json!({"request":{"sessionId":"fingerprint-target","action":"previewImport","format":"sql","path":path}})).await.unwrap();
+    assert_ne!(updated["sourceFingerprint"], preview["sourceFingerprint"]);
+    assert_eq!(updated["bytes"], preview["bytes"]);
+    state.call("transfer_data",json!({"request":{"sessionId":"fingerprint-target","action":"import","format":"sql","path":path,"confirmed":true,"sourceFingerprint":updated["sourceFingerprint"]}})).await.unwrap();
+    let count = state
+        .session("fingerprint-target")
+        .await
+        .unwrap()
+        .execute(
+            "SELECT COUNT(*) AS n FROM sqlite_schema WHERE name LIKE 'fingerprint_%'",
+            BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(count.sets[0].rows[0]["n"].text(), "2");
+    assert!(!tmp
+        .path()
+        .join("app/artifacts")
+        .read_dir()
+        .unwrap()
+        .any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("verified-import-")));
+}
+
+#[tokio::test]
+async fn pasted_sql_fingerprint_is_content_based_across_different_temporary_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = AppState::new(tmp.path().join("app")).unwrap();
+    let profile = ConnectionProfile {
+        id: "pasted-target".into(),
+        name: "Pasted QA".into(),
+        file_path: tmp.path().join("target.sqlite").to_string_lossy().into(),
+        create_if_missing: true,
+        ..Default::default()
+    };
+    state.store.save_profile(&profile).unwrap();
+    state
+        .call(
+            "open_session",
+            json!({"profileId":profile.id,"sessionId":"pasted-target"}),
+        )
+        .await
+        .unwrap();
+    let content = "CREATE TABLE pasted_once(id INTEGER); INSERT INTO pasted_once VALUES(7);";
+    let first=state.call("transfer_data",json!({"request":{"sessionId":"pasted-target","action":"previewImport","format":"sql","content":content}})).await.unwrap();
+    let second=state.call("transfer_data",json!({"request":{"sessionId":"pasted-target","action":"previewImport","format":"sql","content":content}})).await.unwrap();
+    assert_ne!(first["path"], second["path"]);
+    assert_eq!(first["sourceFingerprint"], second["sourceFingerprint"]);
+    state.call("transfer_data",json!({"request":{"sessionId":"pasted-target","action":"import","format":"sql","content":content,"confirmed":true,"sourceFingerprint":first["sourceFingerprint"]}})).await.unwrap();
+    let result = state
+        .session("pasted-target")
+        .await
+        .unwrap()
+        .execute("SELECT id FROM pasted_once", BTreeMap::new())
+        .await
+        .unwrap();
+    assert_eq!(result.sets[0].rows[0]["id"].text(), "7");
 }
