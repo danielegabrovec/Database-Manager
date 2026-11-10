@@ -1,4 +1,4 @@
-# Third-party notices — Database Manager 0.5.0
+# Third-party notices — Database Manager 0.5.1
 
 Database Manager's original application code is attributed to **Daniele Gabrovec**. The project's own terms are in `LICENSE` and `LEGAL.md`. Those terms do not replace the licenses or ownership notices of the third-party components below.
 
@@ -27,7 +27,7 @@ The locked Rust dependency graph includes these MPL-2.0 components:
 | option-ext | 0.2.0 |
 | selectors | 0.38.0 |
 
-Unmodified source for these exact versions is provided with the [v0.5.0 release](https://github.com/danielegabrovec/Database-Manager/releases/tag/v0.5.0) in [third-party-mpl-sources.zip](https://github.com/danielegabrovec/Database-Manager/releases/download/v0.5.0/third-party-mpl-sources.zip). Its `SOURCES.json` identifies every package, upstream source URL, original crate checksum and included file hash. The source archives are checked against `Cargo.lock`; existing source headers are preserved. This source-availability notice concerns those covered components, not a change to the license of Database Manager's separate original files. See the [MPL-2.0 text](https://www.mozilla.org/en-US/MPL/2.0/).
+Unmodified source for these exact versions is provided with the [v0.5.1 release](https://github.com/danielegabrovec/Database-Manager/releases/tag/v0.5.1) in [third-party-mpl-sources.zip](https://github.com/danielegabrovec/Database-Manager/releases/download/v0.5.1/third-party-mpl-sources.zip). Its `SOURCES.json` identifies every package, upstream source URL, original crate checksum and included file hash. The source archives are checked against `Cargo.lock`; existing source headers are preserved. This source-availability notice concerns those covered components, not a change to the license of Database Manager's separate original files. See the [MPL-2.0 text](https://www.mozilla.org/en-US/MPL/2.0/).
 
 ## Other component notices
 

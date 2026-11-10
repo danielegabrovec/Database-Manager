@@ -1,5 +1,7 @@
 # Report di completamento — Database Manager 0.5.0
 
+**Aggiornamento successivo:** il controllo Windows, inizialmente sospeso, è stato completato con il consenso dell’utente e ha portato alla correzione 0.5.1. Consulta il [report finale 0.5.1](REPORT-0.5.1-20261110.md) per gli esiti nativi e la distribuzione corrente. Questa pagina conserva la cronologia della 0.5.0.
+
 Data: **10 novembre 2026**. Autore del software: **Daniele Gabrovec**.
 
 ## Stato recuperato

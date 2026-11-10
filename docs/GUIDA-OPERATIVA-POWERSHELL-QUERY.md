@@ -1,6 +1,6 @@
 # Guida operativa: PowerShell, database e query
 
-Database Manager 0.5.0 · Daniele Gabrovec
+Database Manager 0.5.1 · Daniele Gabrovec
 
 La stessa guida è inclusa nell’app: pulsante **Guida** nella barra inferiore. Gli esempi usano esclusivamente dati sintetici. I client esterni e i server vanno predisposti separatamente; SQLite è incorporato nell’app.
 

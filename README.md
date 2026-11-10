@@ -4,11 +4,11 @@ Applicazione desktop in italiano per **SQLite, PostgreSQL, MySQL, MariaDB e Mong
 
 Apri database e file già esistenti, prepara le query, modifica i dati con anteprima e genera codice per dodici linguaggi. I cataloghi separano esempi SQL/MongoDB e script PowerShell da leggere e personalizzare. Le funzioni principali e la guida didattica funzionano senza AI.
 
-**Autore: Daniele Gabrovec** · **Versione 0.5.0** · **Distribuzione: Windows x64**
+**Autore: Daniele Gabrovec** · **Versione 0.5.1** · **Distribuzione: Windows x64**
 
 [**Scarica l'ultima release Windows**](https://github.com/danielegabrovec/Database-Manager/releases/latest) · [Guida utente](docs/GUIDA-UTENTE.md) · [Sviluppo](docs/SVILUPPO.md) · [Licenza](LICENSE)
 
-La 0.5 completa apertura file e cataloghi, aggiunge piani di modifica dei database esistenti, guida PowerShell passo passo e funzioni di creazione dello schema nei dodici linguaggi. [Novità e limiti](docs/VERSIONE-0.5.md).
+La 0.5.1 completa apertura file e cataloghi, aggiunge piani di modifica dei database esistenti, guida PowerShell passo passo e funzioni di creazione dello schema nei dodici linguaggi. [Novità e limiti](docs/VERSIONE-0.5.md). La [patch 0.5.1](docs/VERSIONE-0.5.1.md) include la correzione di codifica verificata nella finestra Windows reale.
 
 ## Inizia in pochi minuti
 
@@ -111,7 +111,7 @@ La suite corrente passa **306 test frontend**. Le prove dedicate della 0.5 verif
 
 I parser reali di **Windows PowerShell 5.1 e PowerShell 7** verificano **57 script ciascuno**: 52 modelli iniziali e 5 casi con valori particolari, 114 analisi sintattiche. La sintassi non certifica l’esecuzione di tutti i comandi sui server.
 
-Esiti della suite Rust, prove visive, installer e ambito della pubblicazione sono nel [report completo della 0.5](docs/REPORT-0.5.0-20261110.md). Le verifiche delle versioni precedenti restano nei rispettivi documenti.
+Esiti della suite Rust, prove visive, installer e ambito della pubblicazione sono nel [report completo della 0.5](docs/REPORT-0.5.1-20261110.md). Le verifiche delle versioni precedenti restano nei rispettivi documenti.
 
 - L'installer non è firmato digitalmente. La distribuzione qui documentata è **Windows x64**.
 - Il piano grafico supporta modifiche dichiarate e blocca ricostruzioni che perderebbero metadati. Migrazioni complesse, PK/identità e alcuni vincoli richiedono SQL dedicato. Per PostgreSQL opera nello schema **public**.

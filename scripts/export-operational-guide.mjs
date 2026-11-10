@@ -1,8 +1,9 @@
 // Node.js 24 reads the same TypeScript content embedded in the offline app.
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { guideSteps, queryRecipes, GUIDE_SOURCES } from "../src/help/guideContent.ts";
+const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
-const lines = ["# Guida operativa: PowerShell, database e query", "", "Database Manager 0.5.0 · Daniele Gabrovec", "", "La stessa guida è inclusa nell’app: pulsante **Guida** nella barra inferiore. Gli esempi usano esclusivamente dati sintetici. I client esterni e i server vanno predisposti separatamente; SQLite è incorporato nell’app.", "", "Questo documento è generato da `src/help/guideContent.ts`; per aggiornarlo: `node scripts/export-operational-guide.mjs`.", ""];
+const lines = ["# Guida operativa: PowerShell, database e query", "", `Database Manager ${version} · Daniele Gabrovec`, "", "La stessa guida è inclusa nell’app: pulsante **Guida** nella barra inferiore. Gli esempi usano esclusivamente dati sintetici. I client esterni e i server vanno predisposti separatamente; SQLite è incorporato nell’app.", "", "Questo documento è generato da `src/help/guideContent.ts`; per aggiornarlo: `node scripts/export-operational-guide.mjs`.", ""];
 for (const [engine, label] of [["sqlite","SQLite"],["postgresql","PostgreSQL"],["mysql","MySQL"],["mariadb","MariaDB"],["mongodb","MongoDB"]]) {
   lines.push(`## ${label}`, "");
   for (const step of guideSteps(engine)) {

@@ -1,4 +1,4 @@
-# Sviluppo e build Windows — revisione 0.5.0
+# Sviluppo e build Windows — revisione 0.5.1
 
 Progetto di **Daniele Gabrovec**. Le procedure tecniche non sostituiscono [LICENSE](../LICENSE) e [LEGAL.md](../LEGAL.md).
 
@@ -86,7 +86,7 @@ npm exec -- vitest run src/views/OpenFilesView.test.ts src/files/queryExtraction
 npm exec -- vitest run src/navigation.test.tsx src/views/QueryLibraryView.test.tsx src/powershell/catalog.test.ts
 ```
 
-Verifica corrente 0.5: **306 test frontend riusciti**. La suite Rust completa e le prove aggiuntive sui quattro server reali sono registrate in [REPORT-0.5.0-20261110.md](REPORT-0.5.0-20261110.md).
+Verifica corrente 0.5: **306 test frontend riusciti**. La suite Rust completa e le prove aggiuntive sui quattro server reali sono registrate in [REPORT-0.5.1-20261110.md](REPORT-0.5.1-20261110.md).
 
 `src/powershell/catalog.test.ts` controlla **52 modelli** e usa i parser Windows PowerShell 5.1 e PowerShell 7: **57 casi per interprete**, 114 analisi sintattiche. `node scripts/verify-powershell-sqlite.mjs` verifica inoltre creazione reale, -WhatIf senza scritture, CRUD, ALTER e indice con entrambi gli interpreti su SQLite QA; richiede sqlite3.exe. `python scripts/verify-schema-functions.py` compila/esegue i dodici nuovi moduli schema usando toolchain già installate e cache. Non installa toolchain automaticamente.
 
@@ -107,7 +107,7 @@ Il comando esegue il build frontend configurato. I risultati sono sotto `src-tau
 
 Senza `--target`, da una toolchain Windows x64 il percorso abituale è `src-tauri/target/release/bundle/nsis/`. Una cartella `releases/` presente nel workspace è un risultato di packaging locale, non un prerequisito del clone pubblico.
 
-Per preparare il pacchetto pubblico completo usare `./scripts/Build-Release.ps1`: compila in `artifacts/public-release-target`, rimappa i percorsi privati di compilazione, esegue la scansione degli asset e prepara installer, ZIP portabile con tutti i testi legali e checksum. `-PackageOnly` usa esclusivamente una build già verificata. Prima della build generare/verificare l’inventario con `python scripts/generate-third-party-notices.py --mpl-source-output artifacts/release-v050`. Lo script non pubblica su GitHub.
+Per preparare il pacchetto pubblico completo usare `./scripts/Build-Release.ps1`: compila in `artifacts/public-release-target`, rimappa i percorsi privati di compilazione, esegue la scansione degli asset e prepara installer, ZIP portabile con tutti i testi legali e checksum. `-PackageOnly` usa esclusivamente una build già verificata. Prima della build generare/verificare l’inventario con `python scripts/generate-third-party-notices.py --mpl-source-output artifacts/release-v051`. Lo script non pubblica su GitHub.
 
 I lockfile e la toolchain rendono ripetibile la procedura, senza una promessa di identità byte per byte fra installer compilati su macchine diverse. La firma digitale è separata; il pacchetto corrente è dichiarato non firmato.
 
@@ -139,7 +139,7 @@ Approfondimenti: [ARCHITETTURA.md](ARCHITETTURA.md) e [QUERY-IDE.md](QUERY-IDE.m
 - Escludi workspace, credenziali, `.env`, database personali, runtime temporanei e risultati QA da commit e asset pubblici.
 - Distingui build riuscita, avvio del processo, walkthrough nativo e prova dell'installer su Windows pulito.
 
-Il report corrente della 0.5, incluso il collaudo dell’eseguibile incorporato e il packaging, è [REPORT-0.5.0-20261110.md](REPORT-0.5.0-20261110.md). Le verifiche native delle versioni precedenti restano nei documenti storici.
+Il report corrente della 0.5, incluso il collaudo dell’eseguibile incorporato e il packaging, è [REPORT-0.5.1-20261110.md](REPORT-0.5.1-20261110.md). Le verifiche native delle versioni precedenti restano nei documenti storici.
 
 I collaudi della 0.3 restano storici in [VERSIONE-0.3.md](VERSIONE-0.3.md): browser locale con backend Rust per SQLite/file/salvataggi/importazione, reale apertura di Esplora file e avvio/inoltro dei percorsi alla singola istanza nativa. Non vengono trasformati automaticamente in un walkthrough completo della 0.4. Il selettore Tauri di cartella e la scrittura GUI nelle codifiche alternative restano non provati graficamente. L'installer in VM pulita, TLS/SSH esterni, servizi SCM reali e schemi di produzione molto grandi hanno un ambito distinto.
 

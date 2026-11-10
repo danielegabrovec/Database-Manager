@@ -3,7 +3,7 @@
   "generatedOn": "2026-11-10",
   "project": {
     "name": "database-manager",
-    "version": "0.5.0",
+    "version": "0.5.1",
     "authors": [
       "Daniele Gabrovec"
     ]
@@ -11,8 +11,8 @@
   "target": "x86_64-pc-windows-msvc; default desktop features",
   "scopeNote": "Locked application dependency inventory including build/dev tools. Does not assert that every listed package is linked or bundled into the installer.",
   "lockSha256": {
-    "package-lock.json": "f0dd83b24d03740bef2867f8538128c689b84fbe156521eb5601671d51b849a4",
-    "src-tauri/Cargo.lock": "9ec6e43e05af24f0761f770e5bc1cb78b7867606640a65d5635a217e64ba2a85"
+    "package-lock.json": "314b98d917314794c884d5aece1f9aede1c66345b058742ca71a4ec322562314",
+    "src-tauri/Cargo.lock": "119c03211dfc8dde63f6dff5c9c5266c96de0a039e069b6a70dee7be8a983753"
   },
   "packages": [
     {
@@ -14918,10 +14918,10 @@
   "missingInstalledLicenseTexts": [],
   "mplSourceAsset": {
     "asset": "third-party-mpl-sources.zip",
-    "releaseTag": "v0.5.0",
-    "releaseUrl": "https://github.com/danielegabrovec/Database-Manager/releases/tag/v0.5.0",
-    "assetUrl": "https://github.com/danielegabrovec/Database-Manager/releases/download/v0.5.0/third-party-mpl-sources.zip",
-    "sha256": "d01e4f510daf2ed43aad44770c86dfec752970f00a940fbf02f08a791f8de635",
+    "releaseTag": "v0.5.1",
+    "releaseUrl": "https://github.com/danielegabrovec/Database-Manager/releases/tag/v0.5.1",
+    "assetUrl": "https://github.com/danielegabrovec/Database-Manager/releases/download/v0.5.1/third-party-mpl-sources.zip",
+    "sha256": "8ef3456f49ad883f38f4913ced80101dc570efb14b5b106d27704b2331bc0daf",
     "bytes": 175931,
     "packages": [
       {

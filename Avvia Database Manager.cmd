@@ -1,6 +1,8 @@
 @echo off
 cd /d "%~dp0"
-if exist "releases\0.5.0\portable\Database Manager\Database Manager.exe" (
+if exist "releases\0.5.1\portable\Database Manager\Database Manager.exe" (
+  start "" "releases\0.5.1\portable\Database Manager\Database Manager.exe"
+) else if exist "releases\0.5.0\portable\Database Manager\Database Manager.exe" (
   start "" "releases\0.5.0\portable\Database Manager\Database Manager.exe"
 ) else if exist "releases\0.5.0\Database Manager.exe" (
   start "" "releases\0.5.0\Database Manager.exe"

@@ -931,7 +931,6 @@ export function OpenFilesView({
       );
   }
   async function selectEncoding(chosen: string) {
-    setEncoding(chosen);
     if (!document || !(await confirmDiscard())) return;
     if (document.origin === "disk" && document.path)
       await openPath(document.path, chosen, true);

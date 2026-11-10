@@ -1,10 +1,16 @@
-param([switch]$PackageOnly)
+param(
+    [switch]$PackageOnly,
+    [string]$ReportPath = 'docs/REPORT-0.5.1-20261110.md'
+)
 $ErrorActionPreference = 'Stop'
 $dbmRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path
 Push-Location -LiteralPath $dbmRoot
 try {
     $dbmVersion = (Get-Content -LiteralPath 'package.json' -Raw | ConvertFrom-Json).version
     if ($dbmVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Versione non valida.' }
+    $dbmArtifacts = Join-Path $dbmRoot ('artifacts/release-v' + $dbmVersion.Replace('.', ''))
+    $dbmReport = (Resolve-Path -LiteralPath $ReportPath).Path
+    $dbmReportName = Split-Path -Leaf $dbmReport
     $dbmTarget = Join-Path $dbmRoot 'artifacts/public-release-target'
     if (-not $PackageOnly) {
         $env:CARGO_TARGET_DIR = $dbmTarget
@@ -39,13 +45,13 @@ programmi generati. Il pacchetto non installa automaticamente tali strumenti.
 Repository: https://github.com/danielegabrovec/Database-Manager
 "@
     Set-Content -LiteralPath (Join-Path $dbmPortable 'LEGGIMI.txt') -Value $dbmReadme -Encoding utf8
-    & python scripts/scan-publication.py --output artifacts/release-v050/publication-final --assets (Join-Path $dbmPortable 'Database Manager.exe') (Join-Path $dbmRelease $dbmInstallerName)
+    & python scripts/scan-publication.py --output (Join-Path $dbmArtifacts 'publication-final') --assets (Join-Path $dbmPortable 'Database Manager.exe') (Join-Path $dbmRelease $dbmInstallerName)
     if ($LASTEXITCODE -ne 0) { throw 'Scansione di pubblicazione non riuscita: il pacchetto non va pubblicato.' }
     $dbmZipName = 'Database-Manager_' + $dbmVersion + '_windows-x64-portable.zip'
     Compress-Archive -LiteralPath $dbmPortable -DestinationPath (Join-Path $dbmRelease $dbmZipName) -Force
-    Copy-Item -LiteralPath 'artifacts/release-v050/third-party-mpl-sources.zip' -Destination $dbmRelease
-    Copy-Item -LiteralPath 'docs/GUIDA-OPERATIVA-POWERSHELL-QUERY.md','docs/REPORT-0.5.0-20261110.md' -Destination $dbmRelease
-    $dbmAssetNames = @($dbmInstallerName,$dbmZipName,'third-party-mpl-sources.zip','GUIDA-OPERATIVA-POWERSHELL-QUERY.md','REPORT-0.5.0-20261110.md')
+    Copy-Item -LiteralPath (Join-Path $dbmArtifacts 'third-party-mpl-sources.zip') -Destination $dbmRelease
+    Copy-Item -LiteralPath 'docs/GUIDA-OPERATIVA-POWERSHELL-QUERY.md',$dbmReport -Destination $dbmRelease
+    $dbmAssetNames = @($dbmInstallerName,$dbmZipName,'third-party-mpl-sources.zip','GUIDA-OPERATIVA-POWERSHELL-QUERY.md',$dbmReportName)
     $dbmSums = foreach ($dbmAsset in $dbmAssetNames) { (Get-FileHash -LiteralPath (Join-Path $dbmRelease $dbmAsset) -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + $dbmAsset }
     Set-Content -LiteralPath (Join-Path $dbmRelease 'SHA256SUMS.txt') -Value $dbmSums -Encoding ascii
     Write-Output ('Pacchetto pronto: ' + $dbmRelease)
