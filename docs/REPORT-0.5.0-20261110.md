@@ -81,14 +81,17 @@ Le ricevute locali sono in `artifacts/qa-schema-live-20261110.json`, `artifacts/
 
 ## Distribuzione
 
-Il pacchetto 0.5.0 comprende installer NSIS Windows x64, eseguibile, documentazione, checksum e sorgenti MPL corrispondenti. I risultati del collaudo nativo, gli hash e l’esito della pubblicazione sono registrati a completamento del packaging.
+Il pacchetto 0.5.0 è stato pubblicato su GitHub: installer NSIS Windows x64, ZIP portabile con eseguibile e testi legali completi, documentazione, checksum e sorgenti MPL corrispondenti. Commit del codice: `7de59886012221347c9429ff4a18beb91b0fd62a`, tag `v0.5.0`.
 
-La distribuzione di riferimento è [Database Manager v0.5.0](https://github.com/danielegabrovec/Database-Manager/releases/tag/v0.5.0): installer, ZIP portabile completo, guida, questo report, checksum e sorgenti MPL. Il codice resta nel repository; le distribuzioni precedenti vengono rimosse soltanto dopo la verifica del download della nuova. La cronologia Git e i tag sorgente precedenti vengono conservati.
+La distribuzione di riferimento è [Database Manager v0.5.0](https://github.com/danielegabrovec/Database-Manager/releases/tag/v0.5.0), impostata come ultima release pubblica. I sette asset sono stati riscaricati da GitHub e confrontati byte per byte. L’installer è stato scaricato anche senza autenticazione: HTTP 200, 15.357.890 byte e SHA-256 corrispondente. Lo ZIP portabile supera il controllo CRC, contiene l’eseguibile atteso e tutti gli 897 testi legali verificati per hash.
+
+La distribuzione precedente `v0.2.1` è stata rimossa da GitHub dopo questi controlli e dopo un backup locale in `artifacts/release-v050/previous-distribution-backup/`. Restano conservati cronologia Git e tag sorgente `v0.2.1`. La lista delle release pubbliche contiene la 0.5.0.
 
 | File verificato | Dimensione | SHA-256 |
 |---|---:|---|
 | Installer Windows x64 | 15.357.890 byte | `5f5b9f65272442e8bbf3f5678fe701eca96f0a3eb634e96790c5ae0ae0a9817b` |
 | Eseguibile nel pacchetto portabile | 33.335.296 byte | `c9f7b9c1e5783cebbd45f74087d4abcbd141286d1da5ebd4bfa0821a5e86ce70` |
+| ZIP portabile completo | 14.941.078 byte | `867485fdb1803adcb50beada2e69e48278a30944254bd05c46fc1981b23dbb15` |
 | Sorgenti MPL | 175.931 byte | `d01e4f510daf2ed43aad44770c86dfec752970f00a940fbf02f08a791f8de635` |
 
 Il controllo finale di sorgenti e asset non ha rilevato pattern di credenziali, percorsi home privati o metadati di compilazione personali nel binario pubblico. Il primo build era stato respinto da questo controllo: è stato sostituito con il build rimappato, escludendo anche la cache di sviluppo dal codice release. La scansione di stringhe non è un audit di sicurezza completo e non ispeziona da sola il payload compresso NSIS. Il portabile contiene i testi legali completi; i database e le toolchain di collaudo non vengono distribuiti.
