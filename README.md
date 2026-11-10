@@ -129,7 +129,7 @@ L'assistente facoltativo supporta Ollama o un endpoint HTTPS compatibile. Prima 
 | [Guida utente](docs/GUIDA-UTENTE.md)                   | Installazione, dati, editor, designer, codice e flussi quotidiani. |
 | [Guida PowerShell e query](docs/GUIDA-OPERATIVA-POWERSHELL-QUERY.md) | 50 passi, 77 esempi, creazione, apertura, modifica, backup e integrazione. |
 | [Novità 0.5](docs/VERSIONE-0.5.md) | Migrazioni, recupero bozze, codice schema e limiti espliciti. |
-| [Report 0.5](docs/REPORT-0.5.0-20261110.md) | Test correnti, prove visive, installer e distribuzione. |
+| [Report finale 0.5.1](docs/REPORT-0.5.1-20261110.md) | Test correnti, prove visive native, installer e distribuzione. |
 | [Sviluppo](docs/SVILUPPO.md)                           | Toolchain, avvio locale, test e build Windows.                     |
 | [Novità e verifiche 0.4](docs/VERSIONE-0.4.md)         | Navigazione, cataloghi, PowerShell e ambito delle prove correnti.  |
 | [Novità e verifiche 0.3](docs/VERSIONE-0.3.md)         | Prove storiche: apertura file, schede, codifiche e salvataggi.     |

@@ -251,4 +251,4 @@ Le informazioni sul programma e i documenti legali sono consultabili offline nel
 
 [REPORT-0.5.1-20261110.md](REPORT-0.5.1-20261110.md) registra i test correnti, i quattro server reali di collaudo, i dodici linguaggi, le prove visive e il pacchetto. Le verifiche precedenti restano nei documenti 0.1–0.4; non sostituiscono quelle attuali. Il parsing PowerShell resta distinto dall’esecuzione degli script e non è dichiarata un’installazione in VM pulita.
 
-[VERSIONE-0.3.md](VERSIONE-0.3.md) conserva le prove file/SQLite, codifiche, conflitti e importazione. [VERSIONE-0.2.md](VERSIONE-0.2.md) conserva i collaudi precedenti. Il selettore nativo di cartella e la scrittura GUI nelle codifiche alternative non sono dichiarati provati graficamente.
+[VERSIONE-0.3.md](VERSIONE-0.3.md) conserva le prove file/SQLite, codifiche, conflitti e importazione. [VERSIONE-0.2.md](VERSIONE-0.2.md) conserva i collaudi precedenti. Nella 0.5.1 sono stati verificati graficamente il selettore nativo di cartella e apertura/salvataggio UTF-16 con BOM; ciò non certifica ogni codifica alternativa o ogni dialogo degli strumenti esterni.
