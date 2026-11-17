@@ -1,4 +1,11 @@
-import type { ColumnInfo, Engine, SchemaSnapshot, TableInfo } from "../types";
+import type {
+  ColumnInfo,
+  Engine,
+  ObjectRef,
+  SchemaSnapshot,
+  TableInfo,
+} from "../types";
+import { objectKey } from "../utils";
 import {
   quoteIdentifier,
   extendDdl,
@@ -11,13 +18,104 @@ export interface DesignColumn extends ColumnInfo {
   unique?: boolean;
   autoIncrement?: boolean;
 }
-export interface DesignTable {
+export interface DesignTable extends ObjectRef {
   source?: TableInfo;
   position?: { x: number; y: number };
   id: string;
-  name: string;
   columns: DesignColumn[];
   options: DesignerOptions;
+  createSchema?: boolean;
+  mongo?: {
+    validate: boolean;
+    validationLevel?: string;
+    validationAction?: string;
+  };
+}
+
+export interface DesignProject {
+  engine: Engine;
+  tables: DesignTable[];
+}
+
+export function isEditableDesignObject(table: Pick<TableInfo, "kind">) {
+  return /^(table|partitioned table|collection(?: \(schema campionato[^)]*\))?)$/i.test(
+    table.kind,
+  );
+}
+
+export function readDesignProject(value: unknown): DesignProject {
+  if (!value || typeof value !== "object")
+    throw new Error("Formato progetto non valido.");
+  const candidate = value as Partial<DesignProject> & { version?: number };
+  const { engine, tables } = candidate;
+  if (
+    (candidate.version !== undefined && candidate.version !== 1) ||
+    !engine ||
+    !Object.hasOwn(TYPE_CHOICES, engine) ||
+    !Array.isArray(tables) ||
+    !tables.length ||
+    tables.length > 100
+  )
+    throw new Error("Formato progetto non valido.");
+
+  for (const table of tables) {
+    if (
+      typeof table?.name !== "string" ||
+      (table.schema !== undefined && typeof table.schema !== "string") ||
+      (table.createSchema !== undefined &&
+        typeof table.createSchema !== "boolean") ||
+      !Array.isArray(table.columns) ||
+      table.columns.length > 500 ||
+      !table.columns.every(
+        (column) =>
+          typeof column?.name === "string" &&
+          typeof column.dataType === "string" &&
+          (column.defaultValue == null ||
+            typeof column.defaultValue === "string"),
+      ) ||
+      !Array.isArray(table.options?.keys) ||
+      !table.options.keys.every(
+        (key) =>
+          typeof key?.column === "string" &&
+          typeof key.table === "string" &&
+          typeof key.targetColumn === "string" &&
+          (key.targetSchema === undefined ||
+            typeof key.targetSchema === "string"),
+      ) ||
+      !Array.isArray(table.options?.indexes) ||
+      !table.options.indexes.every(
+        (index) =>
+          typeof index?.name === "string" &&
+          typeof index.columns === "string" &&
+          typeof index.unique === "boolean",
+      ) ||
+      typeof table.options.validator !== "string" ||
+      (table.source &&
+        (typeof table.source.name !== "string" ||
+          !Array.isArray(table.source.columns) ||
+          !Array.isArray(table.source.foreignKeys) ||
+          !Array.isArray(table.source.indexes)))
+    )
+      throw new Error("Una struttura del progetto non è valida.");
+  }
+  const ids = new Set<string>();
+  return {
+    engine,
+    tables: tables.map((table) => {
+      const id =
+        typeof table.id === "string" && table.id && !ids.has(table.id)
+          ? table.id
+          : crypto.randomUUID();
+      ids.add(id);
+      const position =
+        table.position &&
+        Number.isFinite(table.position.x) &&
+        Number.isFinite(table.position.y)
+          ? table.position
+          : undefined;
+      return { ...table, id, position };
+    }),
+  };
 }
 export const TYPE_CHOICES: Record<Engine, string[]> = {
   sqlite: [
@@ -82,6 +180,10 @@ export const TYPE_CHOICES: Record<Engine, string[]> = {
     "object",
     "array",
     "binData",
+    "timestamp",
+    "regex",
+    "null",
+    "any",
   ],
 };
 export function newDesignTable(engine: Engine, index = 1): DesignTable {
@@ -111,6 +213,33 @@ export function newDesignTable(engine: Engine, index = 1): DesignTable {
     options: structuredClone(INITIAL_DESIGNER),
   };
 }
+
+export function linkedDesignTemplate(engine: Engine): DesignTable[] {
+  const contacts = newDesignTable(engine);
+  const notes = newDesignTable(engine, 2);
+  contacts.name = "contatti";
+  notes.name = "note";
+  const reference = engine === "mongodb" ? "contattoId" : "contatto_id";
+  const contactId = contacts.columns[0];
+  notes.columns[1].name = "testo";
+  notes.columns.push({
+    name: reference,
+    dataType: contactId.dataType,
+    primaryKey: false,
+    nullable: false,
+  });
+  notes.options.keys.push({
+    column: reference,
+    table: contacts.name,
+    targetColumn: contactId.name,
+  });
+  notes.options.indexes.push({
+    name: "idx_note_contatto",
+    columns: reference,
+    unique: false,
+  });
+  return [contacts, notes];
+}
 function validateName(name: string, label: string) {
   if (!name.trim() || name.length > 128 || /[\u0000-\u001f]/.test(name))
     throw new Error(
@@ -118,11 +247,46 @@ function validateName(name: string, label: string) {
     );
 }
 function equalIdentifier(engine: Engine, left: string, right: string): boolean {
-  return engine === "sqlite" || engine === "mysql" || engine === "mariadb"
-    ? left.toLowerCase() === right.toLowerCase()
-    : left === right;
+  return identifierKey(engine, left) === identifierKey(engine, right);
 }
-function projectReferenceTarget(
+export function identifierKey(engine: Engine, name: string): string {
+  return engine === "sqlite" || engine === "mysql" || engine === "mariadb"
+    ? name.toLowerCase()
+    : name;
+}
+export function designObject(engine: Engine, object: ObjectRef): ObjectRef {
+  return engine === "postgresql"
+    ? { name: object.name, schema: object.schema || "public" }
+    : { name: object.name };
+}
+export function designObjectKey(engine: Engine, object: ObjectRef): string {
+  const normalized = designObject(engine, object);
+  return objectKey({
+    ...normalized,
+    name: identifierKey(engine, normalized.name),
+  });
+}
+export function designReference(
+  engine: Engine,
+  owner: ObjectRef,
+  key: DesignerOptions["keys"][number],
+): ObjectRef {
+  return designObject(engine, {
+    name: key.table,
+    schema: key.targetSchema || owner.schema,
+  });
+}
+export function qualifiedDesignObject(
+  engine: Engine,
+  table: ObjectRef,
+): string {
+  const object = designObject(engine, table);
+  const quote = (name: string) => quoteIdentifier(name, engine);
+  return object.schema
+    ? `${quote(object.schema)}.${quote(object.name)}`
+    : quote(object.name);
+}
+export function checkDesignReferenceTarget(
   engine: Engine,
   target: DesignTable,
   columnName: string,
@@ -151,16 +315,23 @@ function projectReferenceTarget(
 }
 export function buildTableDdl(engine: Engine, table: DesignTable): string {
   validateName(table.name, "Tabella");
-  if (!table.columns.length) throw new Error("Aggiungi almeno una colonna.");
+  if (engine === "postgresql" && table.schema !== undefined)
+    validateName(table.schema, "Schema");
+  if (!table.columns.length && engine !== "mongodb")
+    throw new Error("Aggiungi almeno una colonna.");
   const names = new Set<string>();
   for (const c of table.columns) {
     validateName(c.name, "Colonna");
-    if (names.has(c.name.toLowerCase()))
-      throw new Error(`Colonna duplicata: ${c.name}`);
-    names.add(c.name.toLowerCase());
+    const normalized = identifierKey(engine, c.name);
+    if (names.has(normalized)) throw new Error(`Colonna duplicata: ${c.name}`);
+    names.add(normalized);
     if (!c.dataType.trim() || /[^\w\s(),\[\]]/.test(c.dataType))
       throw new Error(`Tipo non valido per ${c.name}`);
-    if (c.defaultValue && /[;]|--|\/\*/.test(c.defaultValue))
+    if (
+      c.defaultValue &&
+      /[;]|--|\/\*/.test(c.defaultValue) &&
+      !/^'(?:[^'\\]|'')*'$/.test(c.defaultValue)
+    )
       throw new Error(`Valore predefinito non valido per ${c.name}`);
   }
   if (engine === "mongodb") {
@@ -170,14 +341,51 @@ export function buildTableDdl(engine: Engine, table: DesignTable): string {
     const properties = Object.fromEntries(
       table.columns.map((c) => [
         c.name,
-        { bsonType: c.nullable ? [c.dataType, "null"] : c.dataType },
+        c.dataType === "any"
+          ? {}
+          : {
+              bsonType:
+                c.nullable && c.dataType !== "null"
+                  ? [c.dataType, "null"]
+                  : c.dataType,
+            },
       ]),
     );
-    const validator = table.options.customValidator
-      ? JSON.parse(table.options.validator)
-      : { $jsonSchema: { bsonType: "object", required, properties } };
+    const validator =
+      table.mongo?.validate === false
+        ? {}
+        : table.options.customValidator
+          ? JSON.parse(table.options.validator)
+          : { $jsonSchema: { bsonType: "object", required, properties } };
+    if (!validator || typeof validator !== "object" || Array.isArray(validator))
+      throw new Error("Il validatore MongoDB deve essere un oggetto JSON.");
+    if (
+      table.mongo?.validationLevel &&
+      !["off", "strict", "moderate"].includes(table.mongo.validationLevel)
+    )
+      throw new Error("Livello di convalida MongoDB non valido.");
+    if (
+      table.mongo?.validationAction &&
+      !["error", "warn", "errorAndLog"].includes(table.mongo.validationAction)
+    )
+      throw new Error("Azione di convalida MongoDB non valida.");
+    if (table.mongo?.validate !== false && !table.options.customValidator)
+      for (const column of table.columns)
+        if (!TYPE_CHOICES.mongodb.includes(column.dataType))
+          throw new Error(`Tipo BSON non rappresentabile per ${column.name}.`);
     const commands: Record<string, unknown>[] = [
-      { create: table.name, validator, validationLevel: "strict" },
+      {
+        create: table.name,
+        ...(table.mongo?.validate !== false
+          ? {
+              validator,
+              validationLevel: table.mongo?.validationLevel || "strict",
+              ...(table.mongo?.validationAction
+                ? { validationAction: table.mongo.validationAction }
+                : {}),
+            }
+          : {}),
+      },
     ];
     const indexes = [
       ...table.options.indexes,
@@ -189,16 +397,23 @@ export function buildTableDdl(engine: Engine, table: DesignTable): string {
           unique: true,
         })),
     ];
+    if (new Set(indexes.map((index) => index.name)).size !== indexes.length)
+      throw new Error("I nomi degli indici MongoDB devono essere distinti.");
     if (indexes.length)
       commands.push({
         createIndexes: table.name,
-        indexes: indexes.map((i) => ({
-          name: i.name,
-          key: Object.fromEntries(
-            i.columns.split(",").map((s) => [s.trim(), 1]),
-          ),
-          unique: i.unique,
-        })),
+        indexes: indexes.map((i) => {
+          const fields = i.columns.split(",").map((name) => name.trim());
+          if (!i.name.trim() || fields.some((name) => !name))
+            throw new Error("Specifica nome e campi per ogni indice MongoDB.");
+          if (new Set(fields).size !== fields.length)
+            throw new Error(`L’indice ${i.name} contiene campi duplicati.`);
+          return {
+            name: i.name,
+            key: Object.fromEntries(fields.map((name) => [name, 1])),
+            unique: i.unique,
+          };
+        }),
       });
     return JSON.stringify(
       commands.length === 1 ? commands[0] : commands,
@@ -249,16 +464,23 @@ export function buildTableDdl(engine: Engine, table: DesignTable): string {
   });
   if (primary.length && !(engine === "sqlite" && auto.length))
     defs.push(`PRIMARY KEY (${primary.map((c) => q(c.name)).join(", ")})`);
-  let ddl = `CREATE TABLE ${q(table.name)} (\n  ${defs.join(",\n  ")}\n);`;
-  ddl = extendDdl(ddl, engine, table.name, table.columns, table.options);
+  let ddl = `CREATE TABLE ${qualifiedDesignObject(engine, table)} (\n  ${defs.join(",\n  ")}\n);`;
+  ddl = extendDdl(
+    ddl,
+    engine,
+    table.name,
+    table.columns,
+    table.options,
+    designObject(engine, table).schema,
+  );
   return ddl;
 }
 export function buildProjectDdl(engine: Engine, tables: DesignTable[]): string {
   const names = new Set<string>();
   for (const t of tables) {
-    if (names.has(t.name.toLowerCase()))
-      throw new Error(`Tabella duplicata: ${t.name}`);
-    names.add(t.name.toLowerCase());
+    const normalized = designObjectKey(engine, t);
+    if (names.has(normalized)) throw new Error(`Tabella duplicata: ${t.name}`);
+    names.add(normalized);
   }
   if (engine === "mongodb") {
     const commands = tables.flatMap((t) => {
@@ -273,10 +495,25 @@ export function buildProjectDdl(engine: Engine, tables: DesignTable[]): string {
   }
   for (const table of tables)
     for (const key of table.options.keys) {
-      const target = tables.find((target) =>
-        equalIdentifier(engine, target.name, key.table),
+      validateName(key.table, "Tabella collegata");
+      validateName(key.targetColumn, "Campo collegato");
+      if (
+        !table.columns.some((column) =>
+          equalIdentifier(engine, column.name, key.column),
+        )
+      )
+        throw new Error(
+          `Campo origine della relazione inesistente: ${table.name}.${key.column}`,
+        );
+      if (engine === "postgresql" && key.targetSchema !== undefined)
+        validateName(key.targetSchema, "Schema collegato");
+      const reference = designReference(engine, table, key);
+      const target = tables.find(
+        (target) =>
+          designObjectKey(engine, target) ===
+          designObjectKey(engine, reference),
       );
-      if (target) projectReferenceTarget(engine, target, key.targetColumn);
+      if (target) checkDesignReferenceTarget(engine, target, key.targetColumn);
     }
   // Referenced tables precede children. Cycles stay visible and require review.
   const pending = [...tables],
@@ -284,7 +521,13 @@ export function buildProjectDdl(engine: Engine, tables: DesignTable[]): string {
   while (pending.length) {
     const i = pending.findIndex((t) =>
       t.options.keys.every(
-        (k) => !pending.some((p) => p.name === k.table && p.id !== t.id),
+        (k) =>
+          !pending.some(
+            (p) =>
+              designObjectKey(engine, p) ===
+                designObjectKey(engine, designReference(engine, t, k)) &&
+              p.id !== t.id,
+          ),
       ),
     );
     if (i < 0) {
@@ -294,14 +537,18 @@ export function buildProjectDdl(engine: Engine, tables: DesignTable[]): string {
     ordered.push(...pending.splice(i, 1));
   }
   const q = (n: string) => quoteIdentifier(n, engine);
-  for (const t of ordered)
-    for (const k of t.options.keys) {
-      const target = ordered.find((v) => v.name === k.table);
-      if (target && !target.columns.some((c) => c.name === k.targetColumn))
-        throw new Error(
-          `Campo destinazione inesistente: ${k.table}.${k.targetColumn}`,
-        );
-    }
+  const schemaDdl =
+    engine === "postgresql"
+      ? [
+          ...new Set(
+            ordered
+              .filter((table) => table.createSchema)
+              .map((table) => designObject(engine, table).schema!),
+          ),
+        ]
+          .map((schema) => `CREATE SCHEMA IF NOT EXISTS ${q(schema)};\n\n`)
+          .join("")
+      : "";
   const ddl = ordered
     .map((t) =>
       buildTableDdl(
@@ -317,19 +564,27 @@ export function buildProjectDdl(engine: Engine, tables: DesignTable[]): string {
           .flatMap((t) =>
             t.options.keys.map(
               (k) =>
-                `ALTER TABLE ${q(t.name)} ADD FOREIGN KEY (${q(k.column)}) REFERENCES ${q(k.table)} (${q(k.targetColumn)});`,
+                `ALTER TABLE ${qualifiedDesignObject(engine, t)} ADD FOREIGN KEY (${q(k.column)}) REFERENCES ${qualifiedDesignObject(engine, designReference(engine, t, k))} (${q(k.targetColumn)});`,
             ),
           )
           .join("\n");
-  return `-- Progetto Database Manager · ${engine}\n-- Rivedere il codice prima dell’applicazione.\n\n${engine === "postgresql" ? "SET search_path TO public;\n\n" : ""}${ddl}\n${relations}`;
+  return `-- Progetto Database Manager · ${engine}\n-- Rivedere il codice prima dell’applicazione.\n\n${schemaDdl}${ddl}\n${relations}`;
 }
 
 export interface CreationPlan {
   pendingTables: DesignTable[];
   sql: string;
 }
-/** The designer creates PostgreSQL relations in public; other namespaces never
- * turn a pending public table into an existing one. Existing DB metadata takes
+
+export function inDesignNamespace(schema: SchemaSnapshot, table: TableInfo) {
+  if (!table.schema) return true;
+  if (schema.engine === "postgresql") return true;
+  if (schema.engine === "sqlite") return table.schema === "main";
+  if (schema.engine === "mysql" || schema.engine === "mariadb")
+    return !schema.database || table.schema === schema.database;
+  return true;
+}
+/** Existing, qualified database metadata takes
  * precedence over edited project copies which are intentionally not re-created. */
 export function buildCreationPlan(
   engine: Engine,
@@ -337,26 +592,19 @@ export function buildCreationPlan(
   schema: SchemaSnapshot | null,
 ): CreationPlan {
   const sameEngine = schema?.engine === engine ? schema : null;
-  const inTargetNamespace = (table: TableInfo) =>
-    engine === "postgresql"
-      ? !table.schema || table.schema === "public"
-      : engine === "sqlite"
-        ? !table.schema || table.schema === "main"
-        : engine === "mysql" || engine === "mariadb"
-          ? !table.schema ||
-            !sameEngine?.database ||
-            table.schema === sameEngine.database
-          : true;
   const relationKind = (table: TableInfo) =>
     /^(table|view|collection|materialized view|partitioned table)(?:\b|$)/i.test(
       table.kind,
     );
-  const existing = (sameEngine?.tables || []).filter(
-    (table) => relationKind(table) && inTargetNamespace(table),
-  );
-  function findExisting(name: string): TableInfo | undefined {
-    const matches = existing.filter((table) =>
-      equalIdentifier(engine, table.name, name),
+  const existing =
+    sameEngine?.tables.filter(
+      (table) => relationKind(table) && inDesignNamespace(sameEngine, table),
+    ) || [];
+  function findExisting(object: ObjectRef): TableInfo | undefined {
+    const { name } = object;
+    const matches = existing.filter(
+      (table) =>
+        designObjectKey(engine, table) === designObjectKey(engine, object),
     );
     if (
       (engine === "mysql" || engine === "mariadb") &&
@@ -374,12 +622,26 @@ export function buildCreationPlan(
   const names = new Set<string>();
   for (const table of tables) {
     validateName(table.name, "Tabella");
-    const normalized = table.name.toLowerCase();
+    const normalized = designObjectKey(engine, table);
     if (names.has(normalized))
       throw new Error(`Tabella duplicata: ${table.name}`);
     names.add(normalized);
   }
-  const pendingTables = tables.filter((table) => !findExisting(table.name));
+  const pendingTables = tables.filter((table) => !findExisting(table));
+  if (engine === "postgresql" && sameEngine?.namespaces) {
+    const available = new Set(sameEngine.namespaces);
+    for (const pending of pendingTables) {
+      const namespace = designObject(engine, pending).schema!;
+      if (pending.createSchema) available.add(namespace);
+    }
+    for (const pending of pendingTables) {
+      const namespace = designObject(engine, pending).schema!;
+      if (!available.has(namespace))
+        throw new Error(
+          `Lo schema ${namespace} non esiste. Seleziona Crea schema se manca o scegli uno schema esistente.`,
+        );
+    }
+  }
   if (engine !== "mongodb")
     for (const table of pendingTables)
       for (const key of table.options.keys) {
@@ -391,14 +653,17 @@ export function buildCreationPlan(
           throw new Error(
             `Campo origine della relazione inesistente: ${table.name}.${key.column}`,
           );
-        const pending = pendingTables.find((target) =>
-          equalIdentifier(engine, target.name, key.table),
+        const reference = designReference(engine, table, key);
+        const pending = pendingTables.find(
+          (target) =>
+            designObjectKey(engine, target) ===
+            designObjectKey(engine, reference),
         );
         if (pending) {
-          projectReferenceTarget(engine, pending, key.targetColumn);
+          checkDesignReferenceTarget(engine, pending, key.targetColumn);
           continue;
         }
-        const target = findExisting(key.table);
+        const target = findExisting(reference);
         if (!target)
           throw new Error(
             `La relazione ${table.name}.${key.column} riferisce ${key.table}, che non è nel progetto da creare né nello schema effettivo della destinazione.`,
@@ -432,7 +697,17 @@ export function buildCreationPlan(
   return {
     pendingTables,
     sql: pendingTables.length
-      ? buildProjectDdl(engine, pendingTables)
+      ? buildProjectDdl(
+          engine,
+          pendingTables.map((table) =>
+            table.createSchema &&
+            sameEngine?.namespaces?.includes(
+              designObject(engine, table).schema!,
+            )
+              ? { ...table, createSchema: false }
+              : table,
+          ),
+        )
       : "-- Le strutture del progetto sono già presenti nella destinazione.\n-- Le modifiche a strutture esistenti richiedono una migrazione esplicita.",
   };
 }
@@ -444,12 +719,16 @@ export function designSnapshot(
     engine,
     database: "Progetto visuale · non ancora applicato",
     tables: tables.map((t) => ({
-      name: t.name,
-      ...(engine === "postgresql" ? { schema: "public" } : {}),
+      ...designObject(engine, t),
       kind: engine === "mongodb" ? "collection" : "table",
       columns: t.columns.map((c) => ({
         ...c,
         nullable: c.primaryKey ? false : c.nullable,
+        identity:
+          engine === "mongodb"
+            ? c.name === "_id"
+            : !!c.autoIncrement ||
+              /\b(?:SMALLSERIAL|SERIAL|BIGSERIAL)\b/i.test(c.dataType),
       })),
       indexes: t.options.indexes.map((i) => ({
         ...i,
@@ -458,13 +737,123 @@ export function designSnapshot(
       foreignKeys: t.options.keys.map((k) => ({
         column: k.column,
         referencedTable: k.table,
+        referencedSchema: designReference(engine, t, k).schema,
         referencedColumn: k.targetColumn,
       })),
       definition: buildTableDdl(engine, t),
     })),
   };
 }
-export function adoptTable(t: TableInfo): DesignTable {
+const MONGO_TYPES: Record<string, string> = {
+  double: "double",
+  string: "string",
+  embeddeddocument: "object",
+  document: "object",
+  object: "object",
+  array: "array",
+  binary: "binData",
+  bindata: "binData",
+  objectid: "objectId",
+  boolean: "bool",
+  bool: "bool",
+  datetime: "date",
+  date: "date",
+  null: "null",
+  int32: "int",
+  int: "int",
+  int64: "long",
+  long: "long",
+  decimal128: "decimal",
+  decimal: "decimal",
+  timestamp: "timestamp",
+  regularexpression: "regex",
+  regex: "regex",
+};
+
+export function adoptMongoTable(source: TableInfo): DesignTable {
+  const validator = source.mongo?.validator;
+  const hasValidator = !!validator && Object.keys(validator).length > 0;
+  const declaredColumns = new Map(
+    mongoValidatorColumns(validator).map((column) => [column.name, column]),
+  );
+  for (const column of source.columns) {
+    if (!declaredColumns.has(column.name))
+      declaredColumns.set(column.name, {
+        ...column,
+        dataType: MONGO_TYPES[column.dataType.toLowerCase()] || "any",
+      });
+  }
+  return {
+    id: crypto.randomUUID(),
+    name: source.name,
+    columns: [...declaredColumns.values()],
+    options: {
+      ...structuredClone(INITIAL_DESIGNER),
+      indexes: source.indexes
+        .filter(
+          (index) =>
+            index.name !== "_id_" &&
+            index.mongoEditable === true &&
+            index.columns.every((column) => !column.includes(",")),
+        )
+        .map((index) => ({
+          name: index.name,
+          columns: index.columns.join(", "),
+          unique: !!index.unique,
+        })),
+      ...(hasValidator
+        ? {
+            customValidator: true,
+            validator: JSON.stringify(validator, null, 2),
+          }
+        : {}),
+    },
+    mongo: {
+      validate: hasValidator,
+      validationLevel: source.mongo?.validationLevel,
+      validationAction: source.mongo?.validationAction,
+    },
+  };
+}
+
+export function mongoValidatorColumns(
+  validator: Record<string, unknown> | undefined,
+): DesignColumn[] {
+  const schema = validator?.$jsonSchema;
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return [];
+  const { properties, required } = schema as Record<string, unknown>;
+  if (
+    !properties ||
+    typeof properties !== "object" ||
+    Array.isArray(properties)
+  )
+    return [];
+  return Object.entries(properties).map(([name, field]) => {
+    const bsonType = field?.bsonType;
+    const candidate = Array.isArray(bsonType)
+      ? bsonType.filter((type) => type !== "null")
+      : [bsonType];
+    const dataType =
+      candidate.length === 1 && typeof candidate[0] === "string"
+        ? candidate[0]
+        : "any";
+    return {
+      name,
+      dataType,
+      nullable:
+        !(Array.isArray(required) && required.includes(name)) && name !== "_id",
+      primaryKey: name === "_id",
+    };
+  });
+}
+
+export function adoptTable(t: TableInfo, engine?: Engine): DesignTable {
+  if (engine === "mongodb" || /^collection\b/i.test(t.kind))
+    return adoptMongoTable(t);
+  if (t.columns.some((column) => column.generated))
+    throw new Error(
+      "Le colonne calcolate richiedono la definizione SQL originale.",
+    );
   if (
     t.foreignKeys.some(
       (key) =>
@@ -474,6 +863,26 @@ export function adoptTable(t: TableInfo): DesignTable {
   )
     throw new Error(
       "La copia visuale delle chiavi esterne composte non è supportata: usa la definizione SQL originale per conservarne il vincolo completo.",
+    );
+  if (
+    t.foreignKeys.some(
+      (key) =>
+        (engine !== "postgresql" &&
+          key.referencedSchema &&
+          key.referencedSchema !== t.schema) ||
+        [key.onUpdate, key.onDelete].some(
+          (action) =>
+            action &&
+            action.toUpperCase() !== "NO ACTION" &&
+            !(
+              action.toUpperCase() === "RESTRICT" &&
+              (engine === "mysql" || engine === "mariadb")
+            ),
+        ),
+    )
+  )
+    throw new Error(
+      "La copia visuale di FK tra schemi o con azioni avanzate richiede la definizione SQL originale.",
     );
   if (
     t.indexes.some(
@@ -519,6 +928,7 @@ export function adoptTable(t: TableInfo): DesignTable {
   return {
     id: crypto.randomUUID(),
     name: t.name,
+    ...(engine === "postgresql" ? { schema: t.schema || "public" } : {}),
     columns: t.columns.map((c) => ({
       ...c,
       unique: uniqueColumns.has(c.name) && !c.primaryKey,
@@ -531,6 +941,10 @@ export function adoptTable(t: TableInfo): DesignTable {
         column: k.column || k.columns?.[0] || "",
         table: k.referencedTable || "",
         targetColumn: k.referencedColumn || k.referencedColumns?.[0] || "",
+        targetSchema:
+          engine === "postgresql"
+            ? k.referencedSchema || t.schema || "public"
+            : undefined,
       })),
     },
   };

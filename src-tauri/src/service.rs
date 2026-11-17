@@ -1,8 +1,9 @@
 use crate::{
     assistant, codegen,
     database::{Handle, Session},
-    environment, lab,
+    environment, graph_write, lab,
     models::*,
+    quick_query::QuickQuery,
     sqlite,
     store::{engines, Store},
     tools, workspace_files,
@@ -20,8 +21,10 @@ pub struct AppState {
     pub root: PathBuf,
     pub store: Store,
     pub sessions: RwLock<HashMap<String, Arc<Session>>>,
+    quick_queries: RwLock<HashMap<String, Arc<QuickQuery>>>,
     pub environments: environment::EnvironmentManager,
     open_file_requests: Mutex<VecDeque<String>>,
+    graph_previews: Mutex<HashMap<String, (String, String, Instant)>>,
 }
 fn arg<'a>(v: &'a Value, k: &str) -> &'a str {
     v.get(k).and_then(Value::as_str).unwrap_or("")
@@ -31,6 +34,22 @@ fn decode<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, String> {
 }
 fn encode(v: impl serde::Serialize) -> Result<Value, String> {
     serde_json::to_value(v).map_err(|e| e.to_string())
+}
+
+fn saved_assistant_config(ai: &Value, timeout_seconds: u64) -> assistant::AiConfig {
+    let provider = match ai["provider"].as_str() {
+        Some("openai-compatible") => assistant::AiProvider::OpenAiCompatible,
+        _ => assistant::AiProvider::Ollama,
+    };
+    assistant::AiConfig {
+        provider,
+        endpoint: ai["baseUrl"]
+            .as_str()
+            .unwrap_or("http://127.0.0.1:11434")
+            .into(),
+        model: ai["model"].as_str().unwrap_or_default().into(),
+        timeout_seconds,
+    }
 }
 fn secret_entry(id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new("DatabaseManager", id).map_err(|e| e.to_string())
@@ -135,8 +154,10 @@ impl AppState {
             root,
             store,
             sessions: RwLock::new(HashMap::new()),
+            quick_queries: RwLock::new(HashMap::new()),
             environments,
             open_file_requests: Mutex::new(VecDeque::new()),
+            graph_previews: Mutex::new(HashMap::new()),
         })
     }
     pub async fn session(&self, id: &str) -> Result<Arc<Session>, String> {
@@ -153,6 +174,9 @@ impl AppState {
         profile: ConnectionProfile,
         secret: String,
     ) -> Result<SchemaSnapshot, String> {
+        if id.starts_with("quick-") {
+            return Err("Identificatore riservato alla simulazione.".into());
+        }
         let s = Arc::new(Session::open(profile, secret).await?);
         let schema = s.introspect().await?;
         if s.profile.engine == "sqlite" && s.profile.id.len() > 0 {
@@ -182,11 +206,12 @@ impl AppState {
             }
             "list_workspace_directory" => {
                 let path = arg(&args, "path").to_owned();
+                let root = args.get("root").and_then(Value::as_str).map(str::to_owned);
                 let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0);
                 let offset = usize::try_from(offset).map_err(|_| "Offset cartella non valido")?;
                 encode(
                     tokio::task::spawn_blocking(move || {
-                        workspace_files::list_directory(&path, offset)
+                        workspace_files::list_directory_within(&path, offset, root.as_deref())
                     })
                     .await
                     .map_err(|e| e.to_string())??,
@@ -225,6 +250,44 @@ impl AppState {
                 encode(queue.drain(..).collect::<Vec<_>>())
             }
             "open_existing_sqlite" => self.open_existing_sqlite(&args).await,
+            "create_workspace_sqlite" => {
+                let path = arg(&args, "path").trim().to_owned();
+                tokio::task::spawn_blocking(move || sqlite::create_file(&path))
+                    .await.map_err(|e| e.to_string())??;
+                self.open_existing_sqlite(&json!({"path":args["path"].as_str().unwrap_or_default().trim(),"readOnly":false})).await
+            }
+            "create_server_database" => {
+                let session = self.session(arg(&args, "sessionId")).await?;
+                let name = arg(&args, "name").trim();
+                let collection = arg(&args, "collection").trim();
+                if name.is_empty() || name.chars().any(char::is_control) || name.len() > 63 {
+                    return Err("Specifica un nome valido, entro 63 byte.".into());
+                }
+                if session.profile.read_only || session.profile.laboratory {
+                    return Err("Scegli una connessione server modificabile per creare un database.".into());
+                }
+                let _lock = session.serial.lock().await;
+                match &session.handle {
+                    Handle::Postgres {client, ..} => client.batch_execute(&format!("CREATE DATABASE {}", quote_ident("postgresql", name))).await.map_err(|e| format!("Creazione PostgreSQL: {}", e.as_db_error().map(|e| e.message()).unwrap_or("errore di connessione")))?,
+                    Handle::Mysql {conn, ..} => {
+                        use mysql_async::prelude::Queryable;
+                        let mut conn = conn.lock().await;
+                        let active: Option<u8> = conn.query_first("SELECT @@in_transaction").await.map_err(|e| e.to_string())?;
+                        if active != Some(0) {
+                            return Err("Termina la transazione corrente prima di creare un database.".into());
+                        }
+                        conn.query_drop(format!("CREATE DATABASE {}", quote_ident(&session.profile.engine, name))).await.map_err(|e| e.to_string())?;
+                    }
+                    Handle::Mongo {db} => {
+                        if name.contains([' ', '/', '\\', '.', '"', '$', '*', '<', '>', ':', '|', '?']) || collection.is_empty() || collection.len() > 120 || collection.chars().any(char::is_control) || collection.starts_with("system.") || collection.contains('$') {
+                            return Err("Indica un database MongoDB e un nome valido per la prima collezione.".into());
+                        }
+                        db.client().database(name).create_collection(collection).await.map_err(|e| e.to_string())?;
+                    }
+                    _ => return Err("Usa Crea file SQLite per questo motore.".into()),
+                }
+                Ok(json!({"database":name}))
+            }
             "bootstrap" => Ok(
                 json!({"profiles":self.store.profiles()?,"savedQueries":self.store.saved()?,"history":self.store.history()?,"settings":self.store.settings()?,"engines":engines()}),
             ),
@@ -266,8 +329,9 @@ impl AppState {
                 Ok(json!(true))
             }
             "test_connection" => {
-                let p: ConnectionProfile =
+                let mut p: ConnectionProfile =
                     decode(args.get("profile").cloned().ok_or("Profilo mancante")?)?;
+                p.create_if_missing = false;
                 let secret = args
                     .get("password")
                     .and_then(Value::as_str)
@@ -336,16 +400,12 @@ impl AppState {
             ),
             "read_table" => {
                 let s = self.session(arg(&args, "sessionId")).await?;
-                let table = arg(&args, "table");
+                let table: TableRef = decode(args["table"].clone())?;
                 let schema = s.introspect().await?;
-                let metadata = schema
-                    .tables
-                    .iter()
-                    .find(|t| {
-                        t.name == table
-                            || format!("{}.{}", t.schema.as_deref().unwrap_or(""), t.name) == table
-                    })
-                    .ok_or("Oggetto non trovato")?;
+                let metadata = table.resolve(&schema)?;
+                if !matches!(metadata.kind.as_str(), "view" | "table" | "collection" | "timeseries") {
+                    return Err("L’oggetto non contiene dati consultabili.".into());
+                }
                 let limit = args["limit"].as_u64().unwrap_or(200).clamp(1, 1000);
                 let offset = args["offset"].as_u64().unwrap_or(0);
                 let mut out = if s.profile.engine == "mongodb" {
@@ -355,7 +415,14 @@ impl AppState {
                         serde_json::from_str::<Value>(arg(&args, "filter"))
                             .map_err(|e| e.to_string())?
                     };
-                    s.execute(&json!({"find":metadata.name,"filter":filter,"limit":limit as i64,"skip":offset as i64,"batchSize":limit as i64,"maxTimeMS":30000}).to_string(),BTreeMap::new()).await?
+                    let order = arg(&args, "orderBy");
+                    if !order.is_empty() && !metadata.columns.iter().any(|c| c.name == order) {
+                        return Err("Colonna ordinamento sconosciuta".into());
+                    }
+                    let mut request = json!({"find":metadata.name,"filter":filter,"limit":limit,"skip":offset,"batchSize":limit,"maxTimeMS":30000});
+                    let direction = if args["orderDesc"].as_bool().unwrap_or(false) { -1 } else { 1 };
+                    request["sort"] = if order.is_empty() { json!({"_id": 1}) } else { json!({(order): direction}) };
+                    s.execute(&request.to_string(),BTreeMap::new()).await?
                 } else {
                     let q = |n: &str| quote_ident(&s.profile.engine, n);
                     let qualified = metadata
@@ -427,7 +494,10 @@ impl AppState {
                     s.execute(&query, parameters).await?
                 };
                 for set in &mut out.sets {
-                    set.table = Some(table.into());
+                    set.table = Some(match &metadata.schema {
+                        Some(schema) => format!("{schema}.{}", metadata.name),
+                        None => metadata.name.clone(),
+                    });
                     if s.profile.engine != "mongodb" {
                         set.columns = metadata.columns.clone()
                     }
@@ -437,12 +507,38 @@ impl AppState {
             "apply_changes" => {
                 let s = self.session(arg(&args, "sessionId")).await?;
                 encode(
-                    s.apply(
-                        arg(&args, "table"),
+                    s.apply_ref(
+                        decode(args["table"].clone())?,
                         decode(args.get("changes").cloned().unwrap_or(json!([])))?,
                     )
                     .await?,
                 )
+            }
+            "preview_graph_write" | "execute_graph_write" => {
+                self.graph_write(&args, command == "execute_graph_write").await
+            }
+            "quick_query_open" => self.quick_query_open(&args).await,
+            "quick_query_schema" => encode(self.quick_query(arg(&args, "sessionId")).await?.schema().await?),
+            "quick_query_execute" => {
+                let session = self.quick_query(arg(&args, "sessionId")).await?;
+                let parameters = args.get("parameters").cloned().map(decode).transpose()?.unwrap_or_default();
+                encode(session.execute(arg(&args, "query").into(), parameters).await?)
+            }
+            "quick_query_reset" => {
+                let session = self.quick_query(arg(&args, "sessionId")).await?;
+                let schema = session.clone().reset().await?;
+                encode(session.opened(schema))
+            }
+            "quick_query_cancel" => {
+                self.quick_query(arg(&args, "sessionId")).await?.cancel()?;
+                Ok(json!("Interruzione richiesta alla simulazione"))
+            }
+            "quick_query_close" => {
+                let session = self.quick_queries.write().await.remove(arg(&args, "sessionId"));
+                if let Some(session) = session {
+                    session.cancel()?;
+                }
+                Ok(json!(true))
             }
             "lab_open" => self.lab_open(&args).await,
             "lab_reset" => self.lab_reset(&args).await,
@@ -525,6 +621,34 @@ impl AppState {
             "assistant_chat" => {
                 self.assistant_chat(args.get("request").unwrap_or(&args))
                     .await
+            }
+            "assistant_completion" => {
+                let request = args.get("request").unwrap_or(&args);
+                let settings = self.store.settings()?;
+                let ai = &settings["ai"];
+                let config = saved_assistant_config(ai, 30);
+                let mode = ai["completionMode"].as_str().unwrap_or_default();
+                let trigger = arg(request, "trigger");
+                if config.provider != assistant::AiProvider::Ollama
+                    || (trigger != "manual" && trigger != "automatic")
+                    || (mode != "automatic" && !(mode == "manual" && trigger == "manual"))
+                    || arg(request, "model") != config.model
+                    || arg(request, "endpoint") != config.endpoint
+                {
+                    return Err("I suggerimenti Ollama non sono abilitati per questa configurazione.".into());
+                }
+                let engine = if arg(request, "quickSessionId").is_empty() {
+                    arg(request, "engine")
+                } else {
+                    self.quick_query(arg(request, "quickSessionId")).await?;
+                    "sqlite"
+                };
+                encode(assistant::complete_editor(
+                    config,
+                    engine,
+                    arg(request, "prefix"),
+                    arg(request, "suffix"),
+                ).await?)
             }
             "assistant_models" => {
                 let config: assistant::AiConfig = decode(
@@ -642,6 +766,61 @@ impl AppState {
             .await
             .insert(session_id.clone(), session);
         Ok(json!({"profile":profile,"sessionId":session_id,"schema":schema}))
+    }
+    async fn graph_write(&self, args: &Value, execute: bool) -> Result<Value, String> {
+        let session_id = arg(args, "sessionId");
+        let session = self.session(session_id).await?;
+        if session.profile.read_only {
+            return Err("Connessione in sola lettura.".into());
+        }
+        if args["operation"].to_string().len() > 1024 * 1024 {
+            return Err("Valori della scrittura grafica superiori a 1 MiB.".into());
+        }
+        let operation: graph_write::Operation = decode(args["operation"].clone())?;
+        let _guard = session.serial.lock().await;
+        let compiled = operation.compile(&session.introspect_unlocked().await?)?;
+        if execute {
+            let preview = self.graph_previews.lock().map_err(|e| e.to_string())?.remove(arg(args, "fingerprint"));
+            if !preview.is_some_and(|(id, digest, issued)| id == session_id && digest == compiled.digest && issued.elapsed().as_secs() < 300) {
+                return Err("L’anteprima è scaduta o la destinazione è cambiata. Rivedi l’operazione.".into());
+            }
+            return encode(session.execute_unlocked(&compiled.query, compiled.parameters).await?);
+        }
+        let fingerprint = uuid::Uuid::new_v4().to_string();
+        let mut previews = self.graph_previews.lock().map_err(|e| e.to_string())?;
+        previews.retain(|_, (_, _, issued)| issued.elapsed().as_secs() < 300);
+        if previews.len() >= 64 {
+            if let Some(oldest) = previews.iter().min_by_key(|(_, (_, _, issued))| *issued).map(|(token, _)| token.clone()) {
+                previews.remove(&oldest);
+            }
+        }
+        previews.insert(fingerprint.clone(), (session_id.into(), compiled.digest, Instant::now()));
+        Ok(json!({"query":compiled.query,"parameters":compiled.parameters,"fingerprint":fingerprint}))
+    }
+    async fn quick_query(&self, id: &str) -> Result<Arc<QuickQuery>, String> {
+        self.quick_queries.read().await.get(id).cloned().ok_or_else(|| "Apri la simulazione Query rapide per iniziare.".into())
+    }
+    async fn quick_query_open(&self, args: &Value) -> Result<Value, String> {
+        if !matches!(arg(args, "engine"), "" | "sqlite") {
+            return Err("Query rapide simula SQLite in memoria. Le altre connessioni restano disponibili nell’editor normale e nei laboratori dedicati.".into());
+        }
+        let source = match arg(args, "sourceSessionId") {
+            "" => None,
+            id => Some(self.session(id).await?),
+        };
+        let dataset = match arg(args, "dataset") {
+            "" => "shop",
+            dataset => dataset,
+        };
+        let session = QuickQuery::open(dataset.to_owned(), source).await?;
+        let schema = session.clone().schema().await?;
+        let opened = encode(session.opened(schema))?;
+        let mut sessions = self.quick_queries.write().await;
+        if sessions.len() >= 4 {
+            return Err("Chiudi una delle simulazioni prima di aprirne un’altra.".into());
+        }
+        sessions.insert(session.profile.id.clone(), session);
+        Ok(opened)
     }
     async fn lab_open(&self, args: &Value) -> Result<Value, String> {
         let engine = if arg(args, "engine").is_empty() {
@@ -1007,13 +1186,16 @@ impl AppState {
     }
     async fn assistant_chat(&self, r: &Value) -> Result<Value, String> {
         let settings = self.store.settings()?;
-        let ai = &settings["ai"];
-        let provider = if arg(r, "provider") == "ollama" {
-            assistant::AiProvider::Ollama
+        let config = saved_assistant_config(&settings["ai"], 120);
+        let quick_session = if arg(r, "quickSessionId").is_empty() {
+            None
         } else {
-            assistant::AiProvider::OpenAiCompatible
+            if config.provider != assistant::AiProvider::Ollama {
+                return Err("Nella simulazione Query rapide l’assistente usa solo Ollama locale.".into());
+            }
+            Some(self.quick_query(arg(r, "quickSessionId")).await?)
         };
-        let s = if arg(r, "sessionId").is_empty() {
+        let s = if quick_session.is_some() || arg(r, "sessionId").is_empty() {
             None
         } else {
             Some(self.session(arg(r, "sessionId")).await?)
@@ -1021,7 +1203,9 @@ impl AppState {
         let include_schema = r["includeSchema"].as_bool().unwrap_or(false);
         let include_rows = r["includeRows"].as_bool().unwrap_or(false);
         let schema = if include_schema {
-            if let Some(s) = &s {
+            if let Some(quick) = &quick_session {
+                Some(encode(quick.clone().schema().await?)?)
+            } else if let Some(s) = &s {
                 Some(encode(s.introspect().await?)?)
             } else {
                 None
@@ -1029,23 +1213,28 @@ impl AppState {
         } else {
             None
         };
-        let config = assistant::AiConfig {
-            provider,
-            endpoint: ai["baseUrl"]
-                .as_str()
-                .unwrap_or("http://127.0.0.1:11434")
-                .into(),
-            model: if arg(r, "model").is_empty() {
-                ai["model"].as_str().unwrap_or("").into()
-            } else {
-                arg(r, "model").into()
-            },
-            timeout_seconds: 120,
-        };
+        if r.get("model").is_some() && arg(r, "model") != config.model
+            || r.get("endpoint").is_some() && arg(r, "endpoint") != config.endpoint
+            || r.get("provider").is_some() && arg(r, "provider") != match config.provider {
+                assistant::AiProvider::Ollama => "ollama",
+                assistant::AiProvider::OpenAiCompatible => "openai-compatible",
+            }
+        {
+            return Err("La configurazione dell’assistente è cambiata. Riprova con il modello corrente.".into());
+        }
+        let engine = if quick_session.is_some() {
+            Some("sqlite".to_owned())
+        } else { match arg(r, "engine") {
+            current @ ("sqlite" | "postgresql" | "mysql" | "mariadb" | "mongodb") => {
+                Some(current.to_owned())
+            }
+            _ => s.as_ref().map(|s| s.profile.engine.clone()),
+        }};
         let request = assistant::AiRequest {
             config,
             prompt: arg(r, "message").into(),
-            engine: s.as_ref().map(|s| s.profile.engine.clone()),
+            engine,
+            history: r.get("history").cloned().map(decode).transpose()?.unwrap_or_default(),
             consent: assistant::ContextConsent {
                 include_query: r
                     .get("includeQuery")
@@ -1062,12 +1251,12 @@ impl AppState {
                 None
             },
         };
-        let key = password("ai-cloud-api-key");
-        encode(
-            assistant::complete(request, if key.is_empty() { None } else { Some(key) })
-                .await?
-                .content,
-        )
+        let key = if request.config.provider == assistant::AiProvider::OpenAiCompatible {
+            Some(password("ai-cloud-api-key"))
+        } else {
+            None
+        };
+        encode(assistant::complete(request, key).await?.content)
     }
     async fn transfer_data(&self, r: &Value) -> Result<Value, String> {
         let s = self.session(arg(r, "sessionId")).await?;

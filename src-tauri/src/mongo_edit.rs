@@ -5,7 +5,7 @@ use mongodb::{
 };
 use std::time::Instant;
 
-fn value(cell: &CellValue, original: Option<&CellValue>) -> Result<Bson, String> {
+pub(crate) fn value(cell: &CellValue, original: Option<&CellValue>) -> Result<Bson, String> {
     Ok(match cell.kind.as_str() {
         "null" => Bson::Null,
         "integer" => {

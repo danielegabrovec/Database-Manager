@@ -586,7 +586,7 @@ describe("piano di creazione: progetto, pending e metadati effettivi", () => {
     };
     const plan = buildCreationPlan("postgresql", [table], schema);
     expect(plan.pendingTables).toHaveLength(1);
-    expect(plan.sql).toContain("SET search_path TO public;");
+    expect(plan.sql).toContain('CREATE TABLE "public"."customers"');
     expect(designSnapshot("postgresql", [table]).tables[0].schema).toBe(
       "public",
     );

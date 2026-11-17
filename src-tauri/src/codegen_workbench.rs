@@ -1,5 +1,7 @@
 //! Schema-to-code workbench. Source is generated offline and is never executed.
-use crate::codegen::{CodeColumn, GenerateRequest, GeneratedFile, GeneratedProject};
+use crate::codegen::{
+    CodeColumn, GenerateRequest, GeneratedFile, GeneratedProject, WriteColumnMetadata,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -17,7 +19,11 @@ pub struct WorkbenchParameter {
     pub data_type: String,
     #[serde(default)]
     pub nullable: bool,
+    #[serde(default, deserialize_with = "parameter_value")]
     pub value: Option<Value>,
+}
+fn parameter_value<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(input).map(Some)
 }
 fn text_type() -> String {
     "text".into()
@@ -30,6 +36,9 @@ pub struct WorkbenchRequest {
     pub artifact: String,
     pub table: String,
     pub table_schema: Option<String>,
+    pub schema_definition: Option<String>,
+    #[serde(default)]
+    pub write_column_metadata: Vec<WriteColumnMetadata>,
     #[serde(default)]
     pub columns: Vec<CodeColumn>,
     #[serde(default = "select_operation")]
@@ -270,6 +279,11 @@ fn normalize(mut request: WorkbenchRequest) -> Result<WorkbenchRequest, String> 
     }
     if request.columns.len() > 256
         || request.parameters.len() > 256
+        || request.write_column_metadata.len() > 256
+        || request
+            .schema_definition
+            .as_ref()
+            .is_some_and(|script| script.len() > 2 * 1024 * 1024)
         || request.query.len() > 512 * 1024
     {
         return Err("Schema o query troppo grandi per il generatore interattivo.".into());
@@ -325,38 +339,37 @@ fn normalize(mut request: WorkbenchRequest) -> Result<WorkbenchRequest, String> 
 }
 pub fn generate_workbench(request: WorkbenchRequest) -> Result<GeneratedProject, String> {
     let mut request = normalize(request)?;
-    if request.artifact == "schema" { return schema_code::generate(&request); }
+    if request.artifact == "schema" {
+        return schema_code::generate(&request);
+    }
     if request.artifact == "model" {
         return models::generate(&request);
     }
     if matches!(request.artifact.as_str(), "project" | "rest") {
-        if request.engine == "postgresql"
-            && request
-                .table_schema
-                .as_deref()
-                .is_some_and(|s| s != "public")
-        {
-            return Err("Il progetto CRUD completo non può essere generato per uno schema PostgreSQL diverso da public. Generare funzione di lettura, modello o repository con query qualificata.".into());
-        }
         if !request.parameters.is_empty() {
             return Err("Per una query con parametri scegliere Lettura, Funzione o Repository: i progetti CRUD completi usano il loro contratto di payload e non ignorano i parametri del workbench.".into());
         }
-        return crate::codegen::generate_project(GenerateRequest {
-            engine: request.engine,
-            language: request.language,
-            output: request.artifact,
-            table: request.table,
-            query: request.query,
-            columns: request
-                .columns
-                .into_iter()
-                .map(|mut column| {
-                    column.data_type = canonical_scalar_type(&column.data_type);
-                    column
-                })
-                .collect(),
-            educational: request.educational,
-        });
+        return crate::codegen::generate_project_for_source(
+            GenerateRequest {
+                engine: request.engine,
+                language: request.language,
+                output: request.artifact,
+                table: request.table,
+                query: request.query,
+                columns: request
+                    .columns
+                    .into_iter()
+                    .map(|mut column| {
+                        column.data_type = canonical_scalar_type(&column.data_type);
+                        column
+                    })
+                    .collect(),
+                educational: request.educational,
+            },
+            request.table_schema.as_deref(),
+            &request.write_column_metadata,
+            request.schema_definition.as_deref(),
+        );
     }
     if matches!(request.operation.as_str(), "insert" | "update" | "delete") {
         if request.engine != "mongodb"
@@ -365,40 +378,46 @@ pub fn generate_workbench(request: WorkbenchRequest) -> Result<GeneratedProject,
         {
             return Err("Modifica e cancellazione richiedono una chiave primaria stabile.".into());
         }
-        if request.engine == "postgresql"
-            && request
-                .table_schema
-                .as_deref()
-                .is_some_and(|s| s != "public")
-        {
-            return Err("Per i CRUD completi PostgreSQL selezionare public; le letture del workbench supportano gli schemi qualificati.".into());
-        }
-        let mut project = crate::codegen::generate_project(GenerateRequest {
-            engine: request.engine,
-            language: request.language,
-            output: if request.artifact == "script" {
-                "script"
-            } else {
-                "snippet"
-            }
-            .into(),
-            table: request.table,
-            query: String::new(),
-            columns: request
-                .columns
-                .into_iter()
-                .map(|mut column| {
-                    column.data_type = canonical_scalar_type(&column.data_type);
-                    column
-                })
-                .collect(),
-            educational: request.educational,
-        })?;
+        let mut project = crate::codegen::generate_project_for_source(
+            GenerateRequest {
+                engine: request.engine,
+                language: request.language,
+                output: if request.artifact == "script" {
+                    "script"
+                } else {
+                    "snippet"
+                }
+                .into(),
+                table: request.table,
+                query: String::new(),
+                columns: request
+                    .columns
+                    .into_iter()
+                    .map(|mut column| {
+                        column.data_type = canonical_scalar_type(&column.data_type);
+                        column
+                    })
+                    .collect(),
+                educational: request.educational,
+            },
+            request.table_schema.as_deref(),
+            &request.write_column_metadata,
+            request.schema_definition.as_deref(),
+        )?;
         project.notes.push(format!("La funzione execute fornita accetta l’operazione '{}' e un payload; nessuna operazione è eseguita dal generatore.",request.operation));
         return Ok(project);
     }
     if request.engine == "mongodb" {
         return reads::generate_mongo(&request);
+    }
+    if request.operation == "custom" {
+        let statements = crate::remote::split_sql(&request.query)?;
+        if statements.len() != 1
+            || !["SELECT", "WITH", "VALUES"]
+                .contains(&crate::remote::first_keyword(&statements[0]).as_str())
+        {
+            return Err("Questo formato richiede una singola istruzione di lettura SQL.".into());
+        }
     }
     if request.query.trim().is_empty() {
         let quoted = qualified_table(&request);
@@ -844,11 +863,17 @@ mod tests {
         assert!(source.contains("connection.prepare(SQL)"));
     }
     #[test]
-    fn legacy_projects_do_not_silently_ignore_schema_or_parameters() {
+    fn projects_qualify_schema_and_do_not_silently_ignore_parameters() {
         let mut req = request("postgresql", "rust", "project");
         req.table_schema = Some("analytics".into());
-        assert!(generate_workbench(req.clone()).is_err());
-        req.table_schema = Some("public".into());
+        let project = generate_workbench(req.clone()).unwrap();
+        let source = &project
+            .files
+            .iter()
+            .find(|file| file.path == "src/main.rs")
+            .unwrap()
+            .content;
+        assert!(source.contains(r#"\"analytics\".\"people\""#));
         req.query = "SELECT * FROM people WHERE id=$1".into();
         req.parameters.push(WorkbenchParameter {
             name: "p1".into(),
@@ -857,6 +882,85 @@ mod tests {
             value: None,
         });
         assert!(generate_workbench(req).is_err());
+    }
+    #[test]
+    fn generated_crud_uses_identity_and_defaults_and_excludes_generated_columns() {
+        let schema = "CREATE TABLE people(id INTEGER PRIMARY KEY, name TEXT DEFAULT 'predefinito', derived TEXT GENERATED ALWAYS AS (name || '!') STORED);";
+        let req: WorkbenchRequest = serde_json::from_value(json!({
+            "engine":"sqlite", "language":"python", "artifact":"project", "table":"people",
+            "schemaDefinition": schema,
+            "columns":[{"name":"id","dataType":"integer","primaryKey":true},{"name":"name","dataType":"text"},{"name":"derived","dataType":"text"}],
+            "writeColumnMetadata":[{"name":"id","identity":true},{"name":"name","defaultValue":"'predefinito'"},{"name":"derived","generated":true}]
+        })).unwrap();
+        let output = generate_workbench(req).unwrap();
+        let received = |path: &str| -> &str {
+            &output
+                .files
+                .iter()
+                .find(|file| file.path == path)
+                .unwrap()
+                .content
+        };
+        assert_eq!(received("schema.sql"), schema);
+        assert!(!output.files.iter().any(|file| file.path == "database.sql"));
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("database.py"), received("database.py")).unwrap();
+        std::fs::write(tmp.path().join("schema.sql"), received("schema.sql")).unwrap();
+        let python = std::process::Command::new("python").current_dir(tmp.path()).env("DATABASE_URL", "test.sqlite")
+            .arg("-c").arg(concat!(
+                "import sqlite3; from database import execute; ",
+                "db=sqlite3.connect('test.sqlite'); db.executescript(open('schema.sql').read()); db.close(); ",
+                "execute('insert', {}); assert execute('list') == [{'id': 1, 'name': 'predefinito', 'derived': 'predefinito!'}]; ",
+                "execute('update', {'id': 1, 'name': 'città'}); assert execute('list')[0]['derived'] == 'città!'; ",
+                "execute('delete', {'id': 1}); assert execute('list') == []"
+            )).output().unwrap();
+        assert!(
+            python.status.success(),
+            "{}",
+            String::from_utf8_lossy(&python.stderr)
+        );
+    }
+    #[test]
+    fn mongo_schema_and_query_scripts_are_distinct_exports() {
+        let manifest = r#"[{"capped":false,"create":"people"},{"createIndexes":"people","indexes":[{"key":{"name":1},"name":"names"}]}]"#;
+        for language in ["rust", "python", "javascript", "typescript"] {
+            let mut req = request("mongodb", language, "schema");
+            req.query = manifest.into();
+            let project = generate_workbench(req).unwrap();
+            assert_eq!(project.files[1].content, manifest);
+            assert!(project.files[0].content.contains("VERBS"));
+        }
+        let phase: Vec<mongodb::bson::Document> = serde_json::from_str(
+            r#"[{"createIndexes":"people","indexes":[{"key":{"z":1,"a":-1},"name":"order"}],"marker":{"$numberLong":"9007199254740993"}}]"#,
+        ).unwrap();
+        let index = phase[0].get_array("indexes").unwrap()[0]
+            .as_document()
+            .unwrap();
+        let keys = index
+            .get_document("key")
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["z", "a"]);
+        assert_eq!(phase[0].get_i64("marker").unwrap(), 9007199254740993);
+        let mut req = request("mongodb", "python", "script");
+        req.query = r#"{"find":"people","filter":{"name":{"$param":"p1"}}}"#.into();
+        req.parameters.push(WorkbenchParameter {
+            name: "p1".into(),
+            data_type: "text".into(),
+            nullable: false,
+            value: Some(json!("città")),
+        });
+        let generated = generate_workbench(req).unwrap();
+        assert_eq!(generated.files[0].path, "query.mongodb.json");
+        assert_eq!(generated.files.len(), 2);
+        assert!(generated.files[1].content.contains("città"));
+    }
+    #[test]
+    fn parameter_examples_preserve_explicit_sql_null() {
+        let parameter: WorkbenchParameter =
+            serde_json::from_value(json!({"name":"p1","nullable":true,"value":null})).unwrap();
+        assert_eq!(parameter_examples(&[parameter]), json!({"p1":null}));
     }
     #[test]
     fn mongo_markers_and_aggregation_generate_typed_bindings() {

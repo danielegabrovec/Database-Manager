@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ReactFlow, Background, Controls, MarkerType } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
@@ -16,10 +16,17 @@ import { api } from "../api";
 import type {
   ColumnInfo,
   ConnectionProfile,
+  ObjectRef,
   SchemaSnapshot,
   TableInfo,
 } from "../types";
-import { canBrowseData, errorMessage, pretty } from "../utils";
+import {
+  canBrowseData,
+  errorMessage,
+  objectKey,
+  objectLabel,
+  pretty,
+} from "../utils";
 import { Button, Empty, Field, Notice, SectionHeader } from "../components/UI";
 import {
   DesignerExtras,
@@ -38,7 +45,65 @@ interface Props {
   onOpenTable: (table: TableInfo) => void;
   query: string;
   initialTab?: string;
+  initialObject?: StructureObjectRef;
 }
+
+export type StructureObjectRef = ObjectRef &
+  Partial<Pick<TableInfo, "kind" | "definition">>;
+
+function listSchemaObjects(tables: TableInfo[]) {
+  const counts = new Map<string, number>();
+  const versions = new Map<string, number>();
+  return tables
+    .map((table) => {
+      const base = JSON.stringify([objectKey(table), table.kind]);
+      const variant = (versions.get(base) || 0) + 1;
+      versions.set(base, variant);
+      const identity = JSON.stringify([base, table.definition ?? null]);
+      const occurrence = (counts.get(identity) || 0) + 1;
+      counts.set(identity, occurrence);
+      return {
+        table,
+        base,
+        variant,
+        key: JSON.stringify([identity, occurrence]),
+      };
+    })
+    .map((entry) => ({
+      ...entry,
+      version: (versions.get(entry.base) || 0) > 1 ? entry.variant : undefined,
+    }));
+}
+
+const graphNodeId = (item: ObjectRef) => encodeURIComponent(objectKey(item));
+
+export function relationEdges(tables: TableInfo[]) {
+  const ids = new Set(tables.map(graphNodeId));
+  return tables.flatMap((item) =>
+    (item.foreignKeys || []).flatMap((key, index) => {
+      const name = key.referencedTable || key.targetTable;
+      if (!name) return [];
+      const source = graphNodeId(item);
+      const target = graphNodeId({
+        name,
+        schema: key.referencedSchema || item.schema,
+      });
+      if (!ids.has(target)) return [];
+      return [
+        {
+          id: `${source}-${index}`,
+          source,
+          target,
+          label: key.columns?.join(", ") || key.column,
+          markerEnd: { type: MarkerType.ArrowClosed },
+          style: { stroke: "#568dea" },
+          labelStyle: { fill: "#849bb8", fontSize: 11 },
+        },
+      ];
+    }),
+  );
+}
+
 export function SchemaView({
   schema,
   sessionId,
@@ -47,9 +112,30 @@ export function SchemaView({
   onOpenTable,
   query,
   initialTab = "objects",
+  initialObject,
 }: Props) {
-  const [tab, setTab] = useState(initialTab);
-  const [selected, setSelected] = useState("");
+  const tables = useMemo(() => schema?.tables || [], [schema]);
+  const objects = useMemo(() => listSchemaObjects(tables), [tables]);
+  const dataTables = useMemo(() => tables.filter(canBrowseData), [tables]);
+  const requested =
+    initialObject &&
+    objects.find(
+      ({ table }) =>
+        objectKey(table) === objectKey(initialObject) &&
+        (initialObject.kind === undefined ||
+          initialObject.kind === table.kind) &&
+        (initialObject.definition === undefined ||
+          initialObject.definition === table.definition),
+    );
+  const [tab, setTab] = useState(initialObject ? "objects" : initialTab);
+  const [selected, setSelected] = useState(requested?.key || "");
+  useEffect(() => {
+    if (!initialObject) return;
+    setTab("objects");
+    setSelected(requested?.key || "");
+    setChosenColumns([]);
+    setQueryOptions(INITIAL_QUERY_OPTIONS);
+  }, [initialObject, requested?.key]);
   const [tableName, setTableName] = useState("");
   const [columns, setColumns] = useState<ColumnInfo[]>([
     { name: "id", dataType: "INTEGER", nullable: false, primaryKey: true },
@@ -65,11 +151,18 @@ export function SchemaView({
   const [designerOptions, setDesignerOptions] = useState(INITIAL_DESIGNER);
   const [queryOptions, setQueryOptions] = useState(INITIAL_QUERY_OPTIONS);
   const [script, setScript] = useState("");
-  const tables = schema?.tables || [];
-  const dataTables = tables.filter(canBrowseData);
-  const selectableTables = tab === "builder" ? dataTables : tables;
-  const table =
-    selectableTables.find((t) => t.name === selected) || selectableTables[0];
+  const selectable =
+    tab === "builder"
+      ? objects.filter(({ table }) => canBrowseData(table))
+      : objects;
+  const selectedObject =
+    selectable.find(({ key }) => key === selected) || selectable[0];
+  const table = selectedObject?.table;
+  function selectObject(key: string) {
+    setSelected(key);
+    setChosenColumns([]);
+    setQueryOptions(INITIAL_QUERY_OPTIONS);
+  }
   async function tool(action: string, extra: Record<string, unknown> = {}) {
     if (!sessionId) {
       setError("Apri prima una connessione.");
@@ -114,12 +207,12 @@ export function SchemaView({
   const graph = useMemo(
     () => ({
       nodes: dataTables.map((item, index) => ({
-        id: item.name,
+        id: graphNodeId(item),
         position: { x: (index % 3) * 310, y: Math.floor(index / 3) * 230 },
         data: {
           label: (
             <div className="er-table">
-              <strong>{item.name}</strong>
+              <strong>{objectLabel(item)}</strong>
               {item.columns.slice(0, 9).map((column) => (
                 <span key={column.name}>
                   {column.primaryKey && <KeyRound size={10} />}
@@ -142,25 +235,32 @@ export function SchemaView({
           color: "var(--text)",
         },
       })),
-      edges: dataTables.flatMap((item) =>
-        (item.foreignKeys || []).map((key, index) => ({
-          id: `${item.name}-${index}`,
-          source: item.name,
-          target: key.referencedTable || key.targetTable || "",
-          label: key.columns?.join(", ") || key.column,
-          markerEnd: { type: MarkerType.ArrowClosed },
-          style: { stroke: "#568dea" },
-          labelStyle: { fill: "#849bb8", fontSize: 11 },
-        })),
-      ),
+      edges: relationEdges(dataTables),
     }),
     [dataTables],
   );
+  const builderSchema = useMemo(() => {
+    if (!schema) return null;
+    const nameCounts = new Map<string, number>();
+    for (const item of dataTables)
+      nameCounts.set(item.name, (nameCounts.get(item.name) || 0) + 1);
+    return {
+      ...schema,
+      tables: dataTables.filter((item) => nameCounts.get(item.name) === 1),
+    };
+  }, [schema, dataTables]);
   function generateSelect() {
-    if (!table || !schema) return;
+    if (!table || !builderSchema) return;
     try {
       onQuery(
-        buildQuery(schema, table, chosenColumns, filter, limit, queryOptions),
+        buildQuery(
+          builderSchema,
+          table,
+          chosenColumns,
+          filter,
+          limit,
+          queryOptions,
+        ),
       );
     } catch (e) {
       setError(errorMessage(e));
@@ -215,17 +315,30 @@ export function SchemaView({
         (tables.length ? (
           <div className="schema-objects">
             <div className="object-list">
-              {tables.map((item) => (
+              {objects.map(({ table: item, key, version }) => (
                 <button
-                  key={`${item.schema}.${item.name}`}
-                  className={table?.name === item.name ? "active" : ""}
-                  onClick={() => setSelected(item.name)}
+                  key={key}
+                  className={selectedObject?.key === key ? "active" : ""}
+                  aria-current={
+                    selectedObject?.key === key ? "true" : undefined
+                  }
+                  onClick={() => selectObject(key)}
                 >
                   <Columns3 size={15} />
                   <span>
-                    {item.name}
-                    <small>
-                      {item.kind} · {item.columns.length} colonne
+                    {objectLabel(item)}
+                    <small
+                      title={
+                        version
+                          ? item.definition?.trim().split(/\r?\n/, 1)[0]
+                          : undefined
+                      }
+                    >
+                      {item.kind}
+                      {version !== undefined ? ` · variante ${version}` : ""}
+                      {canBrowseData(item)
+                        ? ` · ${item.columns.length} colonne`
+                        : ""}
                     </small>
                   </span>
                 </button>
@@ -235,7 +348,7 @@ export function SchemaView({
               <div className="panel">
                 <div className="panel-heading">
                   <div>
-                    <h2>{table.name}</h2>
+                    <h2>{objectLabel(table)}</h2>
                     <small>
                       {table.schema || schema?.database} · {table.kind}
                     </small>
@@ -436,19 +549,15 @@ export function SchemaView({
         <div className="panel stack">
           <Field label="Tabella o collezione">
             <select
-              value={table?.name || ""}
-              onChange={(e) => {
-                setSelected(e.target.value);
-                setChosenColumns([]);
-                setQueryOptions(INITIAL_QUERY_OPTIONS);
-              }}
+              value={selectedObject?.key || ""}
+              onChange={(e) => selectObject(e.target.value)}
             >
               <option value="" disabled>
                 Seleziona un oggetto
               </option>
-              {dataTables.map((item) => (
-                <option key={item.name} value={item.name}>
-                  {item.name}
+              {selectable.map(({ table: item, key }) => (
+                <option key={key} value={key}>
+                  {objectLabel(item)}
                 </option>
               ))}
             </select>
@@ -500,9 +609,9 @@ export function SchemaView({
               />
             </Field>
           </div>
-          {table && schema && (
+          {table && builderSchema && (
             <QueryBuilderExtras
-              schema={{ ...schema, tables: dataTables }}
+              schema={builderSchema}
               table={table}
               options={queryOptions}
               onChange={setQueryOptions}
@@ -526,12 +635,13 @@ export function SchemaView({
       )}
       {tab === "diagram" && (
         <div className="diagram-panel">
-          {tables.length ? (
+          {dataTables.length ? (
             <ReactFlow
               nodes={graph.nodes}
               edges={graph.edges}
               fitView
               minZoom={0.15}
+              nodesConnectable={false}
               proOptions={{ hideAttribution: true }}
             >
               <Background color="#62748c" gap={22} />

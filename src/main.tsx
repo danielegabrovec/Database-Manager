@@ -22,6 +22,7 @@ import "monaco-editor/features/codeEditor/register";
 import "monaco-editor/features/find/register";
 import "monaco-editor/features/suggest/register";
 import "monaco-editor/editor/contrib/suggest/browser/suggestController";
+import "monaco-editor/editor/contrib/inlineCompletions/browser/inlineCompletions.contribution";
 import "monaco-editor/editor/contrib/snippet/browser/snippetController2";
 import "monaco-editor/features/clipboard/register";
 import "monaco-editor/features/contextmenu/register";

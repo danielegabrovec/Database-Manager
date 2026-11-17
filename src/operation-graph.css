@@ -1,0 +1,112 @@
+.operation-graph {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+  container-type: inline-size;
+}
+.operation-add {
+  flex-wrap: wrap;
+}
+.operation-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(13rem, 17rem);
+  align-items: start;
+  gap: 0.75rem;
+}
+.operation-canvas {
+  height: clamp(18rem, 50vh, 34rem);
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--surface);
+}
+.operation-inspector {
+  min-width: 0;
+  max-height: clamp(18rem, 50vh, 34rem);
+  overflow: auto;
+  padding: 0.8rem;
+}
+.operation-card {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  color: var(--text);
+  background: var(--surface-raised, var(--surface));
+  box-shadow: 0 0.25rem 0.9rem #0003;
+}
+.operation-card.active {
+  border-color: var(--accent);
+}
+.operation-card.write {
+  border-top: 3px solid var(--danger);
+}
+.operation-card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 0.3rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.operation-card small {
+  display: block;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.operation-card .react-flow__handle {
+  width: 10px;
+  height: 10px;
+  background: var(--accent);
+  border-color: var(--text);
+}
+.operation-value {
+  min-width: 0;
+  margin: 0;
+  padding: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+}
+.operation-value legend {
+  padding: 0 0.3rem;
+}
+.operation-output {
+  min-width: 0;
+  padding: 0.8rem;
+}
+.operation-output .row {
+  flex-wrap: wrap;
+}
+.operation-output pre {
+  max-height: 15rem;
+  margin: 0;
+  padding: 0.65rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+}
+.operation-results {
+  overflow: auto;
+  max-height: 18rem;
+}
+.operation-results table {
+  min-width: 100%;
+  border-collapse: collapse;
+}
+.operation-results :is(th, td) {
+  border-bottom: 1px solid var(--border);
+  max-width: 24rem;
+  padding: 0.35rem 0.55rem;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+@container (max-width: 42rem) {
+  .operation-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

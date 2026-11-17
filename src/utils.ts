@@ -3,14 +3,29 @@ import type {
   ColumnInfo,
   DataChange,
   DataRow,
+  ObjectRef,
   TableInfo,
 } from "./types";
+
+export function objectRef({ name, schema }: ObjectRef): ObjectRef {
+  return { name, schema: schema || undefined };
+}
+
+export const objectKey = ({ name, schema }: ObjectRef) =>
+  JSON.stringify([schema || null, name]);
+
+export const objectLabel = ({ name, schema }: ObjectRef) =>
+  schema ? `${schema}.${name}` : name;
+
+export const isCollection = (kind: string) =>
+  /^collection(?:\s*\(|$)/i.test(kind);
 
 export function canBrowseData(
   table: Pick<TableInfo, "kind" | "columns">,
 ): boolean {
   return (
-    ["table", "view", "collection"].includes(table.kind.toLowerCase()) ||
+    ["table", "view", "timeseries"].includes(table.kind.toLowerCase()) ||
+    isCollection(table.kind) ||
     table.columns.length > 0
   );
 }

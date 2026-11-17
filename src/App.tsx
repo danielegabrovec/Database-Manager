@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { CSSProperties } from "react";
 import Editor from "@monaco-editor/react";
 import packageMetadata from "../package.json";
 import { isTauri } from "@tauri-apps/api/core";
@@ -70,6 +71,9 @@ import {
   cellText,
   errorMessage,
   newId,
+  objectKey,
+  objectLabel,
+  objectRef,
   parseCell,
   statementAt,
   updateChange,
@@ -82,6 +86,11 @@ import { TableDataWorkspace } from "./components/TableDataWorkspace";
 import { TableDesignerView } from "./views/TableDesignerView";
 import { QueryLibraryView } from "./views/QueryLibraryView";
 import { WorkspaceNavigation } from "./components/WorkspaceNavigation";
+import { WorkspaceLanding } from "./components/WorkspaceLanding";
+import { WorkspaceFileExplorer } from "./components/WorkspaceFileExplorer";
+import { QuickQueriesSidebar } from "./components/QuickQueriesSidebar";
+import { NewWorkspaceDialog } from "./components/NewWorkspaceDialog";
+import type { SchemaImportRequest } from "./designer/schemaImport";
 import { NAV_FLAT as NAV, NAV_GROUPS } from "./navigation";
 import type { WorkspaceView as View } from "./navigation";
 import type { PowerShellPreviewDraft } from "./views/PowerShellCatalogView";
@@ -98,8 +107,13 @@ import {
   type QueryExplanation,
 } from "./editor/sqlLanguage";
 import type { LibraryEntry } from "./editor/queryCatalog";
+import {
+  installLocalCompletion,
+  isLocalCompletionEnabled,
+} from "./editor/localCompletion";
 import "./workbench.css";
 import "./document-tabs.css";
+import "./workspace-shell.css";
 import { analyzeSqlScript } from "./files/sqlScriptAnalysis";
 import { QueryDocumentTabs } from "./components/QueryDocumentTabs";
 import { restoreFileRecovery, type FileRecovery } from "./files/fileRecovery";
@@ -122,9 +136,13 @@ import {
 } from "./files/queryDocuments";
 import { RecordDialog } from "./components/RecordDialog";
 import { CodegenView } from "./views/CodegenView";
+import { OperationGraphView } from "./views/OperationGraphView";
+import { QuickQueriesView } from "./views/QuickQueriesView";
+import { useQuickQueries } from "./useQuickQueries";
+import { readAssistantSettings } from "./editor/assistantContext";
 import { LabView } from "./views/LabView";
 import { GuideView } from "./views/GuideView";
-import { SchemaView } from "./views/SchemaView";
+import { SchemaView, type StructureObjectRef } from "./views/SchemaView";
 import {
   AssistantPanel,
   EnvironmentsView,
@@ -166,6 +184,43 @@ const EMPTY_BOOTSTRAP: Bootstrap = {
   settings: {},
   engines: [],
 };
+const WORKSPACE_VIEWS = {
+  files: "File",
+  editor: "Query",
+  quick: "Query rapide",
+  data: "Dati",
+  schema: "Struttura",
+  designer: "Designer",
+  builder: "Grafo",
+  codegen: "Codice",
+} as const;
+type WorkspaceTab = keyof typeof WORKSPACE_VIEWS;
+function isWorkspaceTab(value: string): value is WorkspaceTab {
+  return Object.hasOwn(WORKSPACE_VIEWS, value);
+}
+function storedWorkspace() {
+  try {
+    const data = JSON.parse(localStorage.getItem("dbm-layout-v1") || "{}");
+    return {
+      folder:
+        typeof data.folder === "string" ? data.folder.slice(0, 32768) : "",
+      tabs: Array.isArray(data.tabs)
+        ? data.tabs
+            .filter(
+              (tab: unknown): tab is WorkspaceTab =>
+                typeof tab === "string" && isWorkspaceTab(tab),
+            )
+            .slice(0, 10)
+        : [],
+      assistantWidth: Number.isFinite(data.assistantWidth)
+        ? Math.min(520, Math.max(280, data.assistantWidth))
+        : 335,
+    };
+  } catch {
+    return { folder: "", tabs: [] as WorkspaceTab[], assistantWidth: 335 };
+  }
+}
+const WORKSPACE_LAYOUT = storedWorkspace();
 
 export default function App() {
   const confirm = useConfirmation();
@@ -175,9 +230,15 @@ export default function App() {
   const [view, setViewState] = useState<View>(() =>
     NAV.some((item) => item.id === LOCAL_UI.lastView)
       ? (LOCAL_UI.lastView as View)
-      : "files",
+      : "home",
   );
   const viewRef = useRef(view);
+  const quickActive = view === "quick";
+  const quick = useQuickQueries(quickActive && !initializing);
+  const quickEditorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(
+    null,
+  );
+  const [quickAssistant, setQuickAssistant] = useState(true);
   viewRef.current = view;
   const navigationHistory = useRef<View[]>([]);
   const navigationTouched = useRef(false);
@@ -190,10 +251,47 @@ export default function App() {
   );
   const [generatedFileDraft, setGeneratedFileDraft] =
     useState<GeneratedFileDraft>();
+  const [workspaceFolder, setWorkspaceFolder] = useState(
+    WORKSPACE_LAYOUT.folder,
+  );
+  const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTab[]>(
+    WORKSPACE_LAYOUT.tabs,
+  );
+  const [assistantWidth, setAssistantWidth] = useState(
+    WORKSPACE_LAYOUT.assistantWidth,
+  );
+  const [wizard, setWizard] = useState(false);
+  const [schemaImport, setSchemaImport] = useState<SchemaImportRequest | null>(
+    null,
+  );
+  const [structureObject, setStructureObject] = useState<StructureObjectRef>();
+  const [queryDraft, setQueryDraft] = useState<{
+    id: string;
+    query: string;
+    parameters?: Record<string, unknown>;
+  }>();
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "dbm-layout-v1",
+        JSON.stringify({
+          folder: workspaceFolder,
+          tabs: workspaceTabs,
+          assistantWidth,
+        }),
+      );
+    } catch {
+      // Layout preferences are optional. Document recovery is handled independently.
+    }
+  }, [workspaceFolder, workspaceTabs, assistantWidth]);
   function setView(next: View) {
     navigationTouched.current = true;
     if (next === "powershell") setPowerShellMounted(true);
     if (next === "library") setQueryCatalogMounted(true);
+    if (isWorkspaceTab(next))
+      setWorkspaceTabs((tabs) =>
+        tabs.includes(next) ? tabs : [...tabs, next],
+      );
     if (next === viewRef.current) return;
     navigationHistory.current = [
       ...navigationHistory.current,
@@ -229,7 +327,11 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>("dark");
   const [dark, setDark] = useState(true);
   const [profileId, setProfileId] = useState("");
+  const [sessionProfile, setSessionProfile] = useState<ConnectionProfile>();
   const [sessionId, setSessionId] = useState("");
+  const currentSession = useRef("");
+  const connectionRequest = useRef(0);
+  const tableRequest = useRef(0);
   const [schema, setSchema] = useState<SchemaSnapshot | null>(null);
   const [query, setQuery] = useState(
     INITIAL_DOCUMENTS.find((d) => d.id === INITIAL_DOCUMENT_ID)?.content || "",
@@ -285,6 +387,7 @@ export default function App() {
   const [fileOpenToken, setFileOpenToken] = useState(0);
   const [folderOpenToken, setFolderOpenToken] = useState(0);
   const [filePath, setFilePath] = useState("");
+  const [filePathToken, setFilePathToken] = useState(0);
   const [fileQueue, setFileQueue] = useState<string[]>([]);
   const [fileDropActive, setFileDropActive] = useState(false);
   const [importScriptPath, setImportScriptPath] = useState("");
@@ -336,7 +439,10 @@ export default function App() {
   const [queryError, setQueryError] = useState("");
   const [running, setRunning] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const connectingRef = useRef(false);
+  const [schemaApplying, setSchemaApplying] = useState(false);
   const [transferBusy, setTransferBusy] = useState(false);
+  const [graphBusy, setGraphBusy] = useState(false);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
   const [tableLoading, setTableLoading] = useState(false);
@@ -364,6 +470,11 @@ export default function App() {
     setProfileDialog(null);
   }
   const [assistant, setAssistant] = useState(false);
+  const assistantVisible = quickActive ? quickAssistant : assistant;
+  const quickSettings =
+    readAssistantSettings(boot.settings).provider === "ollama"
+      ? boot.settings
+      : {};
   const [sidebarTab, setSidebarTab] = useState("explorer");
   const [explorerSearch, setExplorerSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -406,21 +517,30 @@ export default function App() {
   useEffect(() => () => sqlToolsRef.current?.dispose(), []);
   const saveRef = useRef<() => void>(() => {});
   const initialized = useRef(false);
-  const profile = boot.profiles.find((item) => item.id === profileId);
+  const savedProfile = boot.profiles.find((item) => item.id === profileId);
+  const profile = sessionId ? sessionProfile : savedProfile;
   const engine: Engine = profile?.engine || schema?.engine || "sqlite";
   const activeDocument =
     documents.find((d) => d.id === activeDocumentId) || documents[0];
   const documentEngine: Engine =
-    activeDocument.kind === "mongodb"
+    activeDocument.dialect ??
+    (activeDocument.kind === "mongodb"
       ? "mongodb"
       : engine === "mongodb"
         ? "sqlite"
-        : engine;
-  const documentSchema =
-    (activeDocument.kind === "mongodb") === (engine === "mongodb")
-      ? schema
-      : null;
+        : engine);
+  const documentSchema = documentEngine === engine ? schema : null;
   sqlContextRef.current = { engine: documentEngine, schema: documentSchema };
+  const localCompletionContext = useRef({
+    settings: boot.settings,
+    engine: documentEngine,
+    documentId: activeDocumentId,
+  });
+  localCompletionContext.current = {
+    settings: boot.settings,
+    engine: documentEngine,
+    documentId: activeDocumentId,
+  };
   const documentSnapshot = documents.map((d) =>
     d.id === activeDocumentId
       ? {
@@ -444,6 +564,11 @@ export default function App() {
     : "";
   pendingCloseRef.current =
     running ||
+    quick.busy ||
+    quick.opening ||
+    quick.resetting ||
+    graphBusy ||
+    schemaApplying ||
     transferBusy ||
     saveFileBusy ||
     fileOperationBusy ||
@@ -527,7 +652,7 @@ export default function App() {
     )
       return;
     const remaining = documentSnapshot.filter((d) => d.id !== id);
-    if (!remaining.length) remaining.push(createQueryDocument("", engine));
+    if (!remaining.length) remaining.push(createQueryDocument());
     setDocuments(remaining);
     setDocumentFileErrors((old) => {
       const next = { ...old };
@@ -577,7 +702,18 @@ export default function App() {
         .slice(0, 32);
       setFileQueue(unique);
       setFilePath(unique[0] || "");
+      setFilePathToken((token) => token + 1);
     }
+  }
+  function openWorkspaceFile(path: string) {
+    setFilesMounted(true);
+    setView("files");
+    setFilePath(path);
+    setFilePathToken((token) => token + 1);
+  }
+  function pickWorkspaceFolder() {
+    showFileCenter();
+    setFolderOpenToken((token) => token + 1);
   }
   openFilesRef.current = () => showFileCenter(true);
   const scriptAnalysis = useMemo(
@@ -593,7 +729,9 @@ export default function App() {
         !!selectedTable?.columns.find((item) => item.name === column.name)
           ?.primaryKey,
     })) || [];
-  const activeTableName = activeResult?.table || selectedTable?.name;
+  const activeTableName = selectedTable
+    ? objectLabel(selectedTable)
+    : activeResult?.table;
   const editable =
     !!activeTableName &&
     effectiveColumns.some((column) => column.primaryKey) &&
@@ -862,6 +1000,12 @@ export default function App() {
     if (
       exitBusy ||
       running ||
+      quick.busy ||
+      quick.opening ||
+      quick.resetting ||
+      graphBusy ||
+      applying ||
+      schemaApplying ||
       transferBusy ||
       saveFileBusy ||
       fileOperationBusy
@@ -924,8 +1068,19 @@ export default function App() {
     (await confirm(
       "Sono presenti modifiche preparate e non applicate. Scartarle e continuare?",
     ));
-  async function connect(nextProfile = profile) {
-    if (running || transferBusy) {
+  function switchSession(next: string, connectedProfile?: ConnectionProfile) {
+    const previous = currentSession.current;
+    currentSession.current = next;
+    tableRequest.current++;
+    setTableLoading(false);
+    setSessionId(next);
+    setSessionProfile(connectedProfile);
+    if (previous && previous !== next) {
+      void api("close_session", { sessionId: previous }).catch(() => {});
+    }
+  }
+  async function connect(nextProfile = savedProfile) {
+    if (running || transferBusy || applying || graphBusy || schemaApplying) {
       notify("Attendi il completamento dell’operazione in corso.");
       return null;
     }
@@ -934,17 +1089,23 @@ export default function App() {
       return null;
     }
     if (!(await canLeaveChanges())) return null;
+    const request = ++connectionRequest.current;
+    connectingRef.current = true;
     setConnecting(true);
     setQueryError("");
     setMessage(`Connessione a ${nextProfile.name}…`);
+    const id = newId();
     try {
-      const id = newId();
       const next = await api<SchemaSnapshot>("open_session", {
         profileId: nextProfile.id,
         sessionId: id,
       });
+      if (request !== connectionRequest.current) {
+        await api("close_session", { sessionId: id });
+        return null;
+      }
       setProfileId(nextProfile.id);
-      setSessionId(id);
+      switchSession(id, nextProfile);
       setSchema(next);
       setSelectedTable(null);
       setResult(null);
@@ -952,17 +1113,26 @@ export default function App() {
       setMessage(`Connesso a ${nextProfile.name}`);
       return { id, schema: next };
     } catch (e) {
+      if (request !== connectionRequest.current) return null;
       setQueryError(errorMessage(e));
       setMessage("Connessione non riuscita");
       return null;
     } finally {
-      setConnecting(false);
+      if (request === connectionRequest.current) {
+        connectingRef.current = false;
+        setConnecting(false);
+      }
     }
   }
   async function refreshSchema() {
-    if (!sessionId) return;
+    const id = currentSession.current;
+    if (!id) return;
     try {
-      setSchema(await api<SchemaSnapshot>("introspect", { sessionId }));
+      const updated = await api<SchemaSnapshot>("introspect", {
+        sessionId: id,
+      });
+      if (id !== currentSession.current) return;
+      setSchema(updated);
       notify("Struttura aggiornata.");
     } catch (e) {
       notify(errorMessage(e), true);
@@ -975,25 +1145,39 @@ export default function App() {
     nextDesc = sortDesc,
     filter = tableFilter,
   ) {
-    if (!(await canLeaveChanges())) return;
-    let id = sessionId;
+    if (
+      applying ||
+      running ||
+      transferBusy ||
+      graphBusy ||
+      schemaApplying ||
+      connectingRef.current ||
+      !(await canLeaveChanges()) ||
+      connectingRef.current
+    )
+      return;
+    let id = currentSession.current;
     if (!id) {
       const opened = await connect();
       if (!opened) return;
       id = opened.id;
     }
+    const request = ++tableRequest.current;
+    const latest = () =>
+      request === tableRequest.current && id === currentSession.current;
     setTableLoading(true);
     setQueryError("");
     try {
       const next = await api<QueryResult>("read_table", {
         sessionId: id,
-        table: table.schema ? `${table.schema}.${table.name}` : table.name,
+        table: objectRef(table),
         limit: pageSize,
         offset: nextOffset,
         filter,
         orderBy: nextSort || undefined,
         orderDesc: nextDesc,
       });
+      if (!latest()) return;
       setResult(next);
       setSelectedTable(table);
       setResultIndex(0);
@@ -1004,16 +1188,24 @@ export default function App() {
       setView("data");
       setMessage(`${next.sets[0]?.rows.length || 0} record letti`);
     } catch (e) {
+      if (!latest()) return;
       setQueryError(errorMessage(e));
       setView("data");
       setSelectedTable(null);
       setResult(null);
     } finally {
-      setTableLoading(false);
+      if (latest()) setTableLoading(false);
     }
   }
   async function openedExistingDatabase(opened: OpenedFileDatabase) {
-    if (running || transferBusy) {
+    if (
+      running ||
+      transferBusy ||
+      graphBusy ||
+      applying ||
+      schemaApplying ||
+      connectingRef.current
+    ) {
       void api("close_session", { sessionId: opened.sessionId });
       notify("Attendi la fine della query prima di aprire un altro database.");
       return;
@@ -1050,7 +1242,7 @@ export default function App() {
     }
     const document = createQueryDocument(
       text,
-      options?.kind === "mongodb" ? "mongodb" : "sqlite",
+      options?.kind === "mongodb" ? "mongodb" : undefined,
       label,
     );
     document.path = boundPath;
@@ -1269,11 +1461,7 @@ export default function App() {
       notify(errorMessage(e), true);
     }
   }
-  async function openQuery(
-    text: string,
-    id = "",
-    targetEngine: Engine = engine,
-  ) {
+  async function openQuery(text: string, id = "", targetEngine?: Engine) {
     const existing = id
       ? documentSnapshot.find((d) => d.savedQueryId === id)
       : undefined;
@@ -1285,7 +1473,9 @@ export default function App() {
     const saved = boot.savedQueries.find((item) => item.id === id);
     const document = createQueryDocument(
       text,
-      saved?.engine || targetEngine,
+      saved?.engine ||
+        targetEngine ||
+        (engine === "mongodb" ? engine : undefined),
       saved?.name || "Query senza titolo",
     );
     document.savedQueryId = id;
@@ -1350,6 +1540,18 @@ export default function App() {
     ]);
     editor.focus();
   }
+  function insertQuickQuery(text: string) {
+    const editor = quickEditorRef.current;
+    const selection = editor?.getSelection();
+    if (editor && selection) {
+      editor.executeEdits("quick-assistant", [
+        { range: selection, text, forceMoveMarkers: true },
+      ]);
+      editor.focus();
+    } else {
+      quick.setQuery((current) => (current ? `${current}\n${text}` : text));
+    }
+  }
   async function openLibraryEntry(entry: LibraryEntry) {
     const savedId = entry.source === "saved" ? entry.sourceId || "" : "";
     const existing = savedId
@@ -1387,6 +1589,16 @@ export default function App() {
     expectedSchema?: SchemaSnapshot | null,
     rebuildSqlite = false,
   ): Promise<SchemaSnapshot> {
+    if (
+      connectingRef.current ||
+      running ||
+      applying ||
+      graphBusy ||
+      transferBusy ||
+      schemaApplying
+    ) {
+      throw new Error("Attendi il completamento dell’operazione in corso.");
+    }
     if (designEngine !== engine)
       throw new Error(
         "Collega una connessione dello stesso motore del progetto.",
@@ -1400,6 +1612,7 @@ export default function App() {
       id = opened.id;
     }
     let next: SchemaSnapshot;
+    setSchemaApplying(true);
     try {
       next = await api<SchemaSnapshot>("apply_schema_changes", {
         sessionId: id,
@@ -1411,18 +1624,30 @@ export default function App() {
     } catch (error) {
       // Server DDL can commit individual statements; immediately expose the real state.
       try {
-        setSchema(await api<SchemaSnapshot>("introspect", { sessionId: id }));
+        const updated = await api<SchemaSnapshot>("introspect", {
+          sessionId: id,
+        });
+        if (currentSession.current === id) setSchema(updated);
       } catch {}
       throw error;
+    } finally {
+      setSchemaApplying(false);
     }
-    setSchema(next);
+    if (currentSession.current === id) setSchema(next);
     notify(
       "Piano schema applicato. Apri Dati tabella per verificare i record.",
     );
     return next;
   }
   function addTableRecord() {
-    if (!activeResult) return;
+    if (
+      !activeResult ||
+      !selectedTable ||
+      profile?.readOnly ||
+      tableLoading ||
+      selectedTable.kind === "view"
+    )
+      return;
     setRecord({
       row: {},
       index: Math.max(
@@ -1435,28 +1660,24 @@ export default function App() {
   function showExplanation() {
     setLesson({
       title: "Spiegazione e ordine logico",
-      analysis: explainQuery(
-        query,
-        activeDocument.kind === "mongodb"
-          ? "mongodb"
-          : engine === "mongodb"
-            ? "sqlite"
-            : engine,
-        (activeDocument.kind === "mongodb") === (engine === "mongodb")
-          ? schema
-          : null,
-      ),
+      analysis: explainQuery(query, documentEngine, documentSchema),
     });
   }
   async function run() {
-    if (transferBusy) {
-      notify("Attendi il completamento dell’importazione o del trasferimento.");
+    if (
+      transferBusy ||
+      graphBusy ||
+      schemaApplying ||
+      applying ||
+      connectingRef.current
+    ) {
+      notify("Attendi il completamento dell’operazione in corso.");
       return;
     }
     if (running || !query.trim()) return;
-    if ((activeDocument.kind === "mongodb") !== (engine === "mongodb")) {
+    if (documentEngine !== engine) {
       notify(
-        "La scheda e la connessione usano linguaggi diversi. Scegli una connessione SQL oppure MongoDB coerente con il documento.",
+        `La scheda usa ${ENGINE_LABELS[documentEngine]}. Scegli una connessione dello stesso motore prima di eseguire.`,
         true,
       );
       return;
@@ -1468,7 +1689,12 @@ export default function App() {
       ))
     )
       return;
-    if (!(await canLeaveChanges())) return;
+    if (
+      !(await canLeaveChanges()) ||
+      connectingRef.current ||
+      (sessionId && sessionId !== currentSession.current)
+    )
+      return;
     let id = sessionId;
     if (!id) {
       const opened = await connect();
@@ -1515,6 +1741,8 @@ export default function App() {
       return;
     }
     setRunning(true);
+    tableRequest.current++;
+    setTableLoading(false);
     setQueryError("");
     setSelectedTable(null);
     setChanges(new Map());
@@ -1527,9 +1755,12 @@ export default function App() {
           parameters,
           executionMode,
         },
-        (count) =>
-          setMessage(`${count.toLocaleString("it-IT")} righe ricevute…`),
+        (count) => {
+          if (id === currentSession.current)
+            setMessage(`${count.toLocaleString("it-IT")} righe ricevute…`);
+        },
       );
+      if (id !== currentSession.current) return;
       setResult(next);
       setResultIndex(0);
       setOffset(0);
@@ -1541,6 +1772,7 @@ export default function App() {
         /* La query rimane riuscita anche se la cronologia non è disponibile. */
       }
     } catch (e) {
+      if (id !== currentSession.current) return;
       setQueryError(errorMessage(e));
       setMessage("Query non riuscita");
     } finally {
@@ -1601,12 +1833,7 @@ export default function App() {
       id: activeSavedId || newId(),
       name: savedName.trim(),
       query,
-      engine:
-        activeDocument.kind === "mongodb"
-          ? "mongodb"
-          : engine === "mongodb"
-            ? "sqlite"
-            : engine,
+      engine: documentEngine,
       favorite:
         boot.savedQueries.find((item) => item.id === activeSavedId)?.favorite ||
         false,
@@ -1663,6 +1890,7 @@ export default function App() {
     }
   }
   function editCell(index: number, column: ColumnInfo, text: string) {
+    if (column.generated || tableLoading || graphBusy) return;
     if (!activeResult) return;
     try {
       const original = activeResult.rows[index] || {};
@@ -1692,7 +1920,7 @@ export default function App() {
     }
   }
   function deleteRow(index: number) {
-    if (!activeResult) return;
+    if (!activeResult || tableLoading || graphBusy) return;
     setChanges((old) => {
       const next = new Map(old);
       const existing = next.get(index);
@@ -1719,12 +1947,23 @@ export default function App() {
     });
   }
   async function applyChanges() {
-    if (!activeTableName || !changes.size) return;
+    if (
+      !activeTableName ||
+      !changes.size ||
+      tableLoading ||
+      applying ||
+      graphBusy ||
+      schemaApplying ||
+      connectingRef.current ||
+      sessionId !== currentSession.current
+    )
+      return;
+    const table = selectedTable ? objectRef(selectedTable) : activeTableName;
     setApplying(true);
     try {
       const changed = await api<QueryResult>("apply_changes", {
         sessionId,
-        table: activeTableName,
+        table,
         changes: [...changes.values()],
       });
       setChanges(new Map());
@@ -1735,7 +1974,7 @@ export default function App() {
         try {
           const refreshed = await api<QueryResult>("read_table", {
             sessionId,
-            table: activeTableName,
+            table,
             limit: pageSize,
             offset,
             filter: tableFilter,
@@ -1754,11 +1993,16 @@ export default function App() {
       setApplying(false);
     }
   }
-  function saveRecord(values: Record<string, string>, nullFields: string[]) {
+  function saveRecord(
+    values: Record<string, string>,
+    nullFields: string[],
+    mongoValues?: DataRow,
+  ) {
     if (!record || !activeResult) return;
     try {
-      const parsed: DataRow = {};
-      for (const column of effectiveColumns) {
+      const parsed: DataRow = mongoValues ?? {};
+      for (const column of mongoValues ? [] : effectiveColumns) {
+        if (column.generated) continue;
         const isNull = nullFields.includes(column.name);
         const value = isNull ? "NULL" : values[column.name];
         if (
@@ -1815,14 +2059,33 @@ export default function App() {
       }));
       setProfileId(data.profile.id);
     }
-    setSessionId(data.sessionId);
+    connectionRequest.current++;
+    connectingRef.current = false;
+    setConnecting(false);
+    switchSession(data.sessionId, data.profile);
     setSchema(data.schema);
     setSelectedTable(null);
     setResult(null);
     setChanges(new Map());
-    setMessage("Laboratorio pronto");
+    setMessage(
+      data.profile.laboratory
+        ? "Laboratorio pronto"
+        : `Connesso a ${data.profile.name}`,
+    );
   }
   async function quickLab() {
+    if (
+      connectingRef.current ||
+      running ||
+      applying ||
+      transferBusy ||
+      graphBusy ||
+      schemaApplying ||
+      !(await canLeaveChanges()) ||
+      connectingRef.current
+    )
+      return;
+    connectingRef.current = true;
     try {
       setConnecting(true);
       openedLab(await api("lab_open", { engine: "sqlite", dataset: "shop" }));
@@ -1833,6 +2096,7 @@ export default function App() {
     } catch (e) {
       notify(errorMessage(e), true);
     } finally {
+      connectingRef.current = false;
       setConnecting(false);
     }
   }
@@ -1846,7 +2110,7 @@ export default function App() {
     schema?.tables.filter(
       (table) =>
         canBrowseData(table) &&
-        table.name.toLowerCase().includes(explorerSearch.toLowerCase()),
+        objectLabel(table).toLowerCase().includes(explorerSearch.toLowerCase()),
     ) || [];
   const savedSorted = [...boot.savedQueries].sort(
     (a, b) =>
@@ -1876,10 +2140,13 @@ export default function App() {
 
   return (
     <div
-      className={`app-shell ${assistant ? "with-assistant" : ""}`}
-      style={{
-        gridTemplateColumns: `${sidebarWidth}px minmax(0,1fr)${assistant ? " 335px" : ""}`,
-      }}
+      className={`app-shell dbm-workbench ${assistantVisible ? "with-assistant" : ""}`}
+      style={
+        {
+          "--explorer-width": `${sidebarWidth}px`,
+          "--assistant-width": `${assistantWidth}px`,
+        } as CSSProperties
+      }
     >
       <aside className="sidebar">
         <div
@@ -1935,6 +2202,14 @@ export default function App() {
           <span>Cerca nel workspace</span>
           <kbd>Ctrl K</kbd>
         </button>
+        <div className="workspace-quick-links">
+          <button className="text-button" onClick={() => setView("home")}>
+            Inizio
+          </button>
+          <button className="text-button" onClick={() => setWizard(true)}>
+            <Plus size={14} /> Nuovo
+          </button>
+        </div>
         <div className="workspace-label">
           <FolderOpen size={12} />
           WORKSPACE LOCALE
@@ -1947,200 +2222,235 @@ export default function App() {
             setView(next);
           }}
         />
-        <div className="sidebar-section">
-          <div className="sidebar-tabs">
-            <button
-              className={sidebarTab === "explorer" ? "active" : ""}
-              onClick={() => setSidebarTab("explorer")}
-            >
-              Connessioni
-            </button>
-            <button
-              className={sidebarTab === "saved" ? "active" : ""}
-              onClick={() => setSidebarTab("saved")}
-            >
-              Salvate
-            </button>
-            <button
-              className={sidebarTab === "history" ? "active" : ""}
-              aria-label="Cronologia query"
-              title="Cronologia query"
-              onClick={() => setSidebarTab("history")}
-            >
-              <History size={13} />
-            </button>
-            <div className="spacer" />
-            <button
-              className="icon-button"
-              aria-label="Nuova connessione"
-              onClick={() => openNewConnection()}
-            >
-              <Plus size={16} />
-            </button>
-          </div>
-          {sidebarTab === "explorer" && (
-            <>
-              <div className="explorer-search">
-                <Search size={13} />
-                <input
-                  aria-label="Filtra tabelle"
-                  placeholder="Filtra oggetti…"
-                  value={explorerSearch}
-                  onChange={(e) => setExplorerSearch(e.target.value)}
-                />
+        {quickActive ? (
+          <QuickQueriesSidebar
+            schema={quick.session?.schema ?? null}
+            history={quick.history}
+            onTable={(table) => void quick.execute(table)}
+            onRestore={quick.restore}
+          />
+        ) : (
+          <>
+            <WorkspaceFileExplorer
+              path={workspaceFolder}
+              onPath={setWorkspaceFolder}
+              onOpenFile={openWorkspaceFile}
+              onPickFolder={pickWorkspaceFolder}
+            />
+            <div className="sidebar-section">
+              <div className="sidebar-tabs">
+                <button
+                  className={sidebarTab === "explorer" ? "active" : ""}
+                  onClick={() => setSidebarTab("explorer")}
+                >
+                  Connessioni
+                </button>
+                <button
+                  className={sidebarTab === "saved" ? "active" : ""}
+                  onClick={() => setSidebarTab("saved")}
+                >
+                  Salvate
+                </button>
+                <button
+                  className={sidebarTab === "history" ? "active" : ""}
+                  aria-label="Cronologia query"
+                  title="Cronologia query"
+                  onClick={() => setSidebarTab("history")}
+                >
+                  <History size={13} />
+                </button>
+                <div className="spacer" />
+                <button
+                  className="icon-button"
+                  aria-label="Nuova connessione"
+                  onClick={() => openNewConnection()}
+                >
+                  <Plus size={16} />
+                </button>
               </div>
-              <div className="connection-tree">
-                {boot.profiles.map((item) => (
-                  <div key={item.id}>
-                    <div
-                      className={`connection-line ${profileId === item.id ? "selected" : ""}`}
-                    >
-                      <button
-                        onClick={() => void connect(item)}
-                        title={`${ENGINE_LABELS[item.engine]} · ${item.database || item.filePath}`}
-                      >
-                        <span className={`engine-dot ${item.engine}`} />
-                        {profileId === item.id && sessionId ? (
-                          <ChevronDown size={12} />
-                        ) : (
-                          <ChevronRight size={12} />
-                        )}
-                        <span>{item.name}</span>
-                        {item.readOnly && <ShieldCheck size={12} />}
-                      </button>
-                      <button
-                        className="tree-menu"
-                        aria-label={`Modifica ${item.name}`}
-                        onClick={() => setProfileDialog(item)}
-                      >
-                        <MoreHorizontal size={15} />
-                      </button>
-                    </div>
-                    {profileId === item.id && sessionId && (
-                      <div className="table-tree">
-                        <div className="tree-folder">
-                          <ChevronDown size={12} />
-                          <FolderOpen size={13} />
-                          {schema?.engine === "mongodb"
-                            ? "Collezioni"
-                            : "Oggetti"}
-                          <span>
-                            {schema?.tables.filter(canBrowseData).length || 0}
-                          </span>
+              {sidebarTab === "explorer" && (
+                <>
+                  <div className="explorer-search">
+                    <Search size={13} />
+                    <input
+                      aria-label="Filtra tabelle"
+                      placeholder="Filtra oggetti…"
+                      value={explorerSearch}
+                      onChange={(e) => setExplorerSearch(e.target.value)}
+                    />
+                  </div>
+                  <div className="connection-tree">
+                    {boot.profiles.map((item) => (
+                      <div key={item.id}>
+                        <div
+                          className={`connection-line ${profileId === item.id ? "selected" : ""}`}
+                        >
                           <button
-                            className="icon-button"
-                            aria-label="Aggiorna struttura"
-                            onClick={refreshSchema}
+                            onClick={() => void connect(item)}
+                            title={`${ENGINE_LABELS[item.engine]} · ${item.database || item.filePath}`}
                           >
-                            <RefreshCw size={11} />
+                            <span className={`engine-dot ${item.engine}`} />
+                            {profileId === item.id && sessionId ? (
+                              <ChevronDown size={12} />
+                            ) : (
+                              <ChevronRight size={12} />
+                            )}
+                            <span>{item.name}</span>
+                            {item.readOnly && <ShieldCheck size={12} />}
+                          </button>
+                          <button
+                            className="tree-menu"
+                            aria-label={`Modifica ${item.name}`}
+                            onClick={() => setProfileDialog(item)}
+                          >
+                            <MoreHorizontal size={15} />
                           </button>
                         </div>
-                        {visibleTables.map((table) => (
-                          <button
-                            key={`${table.schema}.${table.name}`}
-                            className={
-                              selectedTable?.name === table.name &&
-                              view === "data"
-                                ? "active"
-                                : ""
-                            }
-                            onClick={() =>
-                              void readTable(table, 0, "", false, "")
-                            }
-                          >
-                            <Table2 size={13} />
-                            <span>{table.name}</span>
-                            <ChevronRight size={11} />
-                          </button>
-                        ))}
-                        {!visibleTables.length && (
-                          <p className="tree-empty">
-                            {schema?.tables.length
-                              ? "Nessuna corrispondenza"
-                              : "Nessuna tabella"}
-                          </p>
+                        {profileId === item.id && sessionId && (
+                          <div className="table-tree">
+                            <div className="tree-folder">
+                              <ChevronDown size={12} />
+                              <FolderOpen size={13} />
+                              {schema?.engine === "mongodb"
+                                ? "Collezioni"
+                                : "Oggetti"}
+                              <span>
+                                {schema?.tables.filter(canBrowseData).length ||
+                                  0}
+                              </span>
+                              <button
+                                className="icon-button"
+                                aria-label="Aggiorna struttura"
+                                onClick={refreshSchema}
+                              >
+                                <RefreshCw size={11} />
+                              </button>
+                            </div>
+                            {visibleTables.map((table) => (
+                              <div
+                                key={objectKey(table)}
+                                className="table-tree-row"
+                              >
+                                <button
+                                  className={
+                                    selectedTable &&
+                                    objectKey(selectedTable) ===
+                                      objectKey(table) &&
+                                    view === "data"
+                                      ? "active"
+                                      : ""
+                                  }
+                                  onClick={() =>
+                                    void readTable(table, 0, "", false, "")
+                                  }
+                                >
+                                  <Table2 size={13} />
+                                  <span>{objectLabel(table)}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className="table-structure-link"
+                                  aria-label={`Struttura di ${objectLabel(table)}`}
+                                  title={`Struttura di ${objectLabel(table)}`}
+                                  onClick={() => {
+                                    setStructureObject({ ...table });
+                                    setView("schema");
+                                  }}
+                                >
+                                  <Layers3 size={13} />
+                                </button>
+                              </div>
+                            ))}
+                            {!visibleTables.length && (
+                              <p className="tree-empty">
+                                {schema?.tables.length
+                                  ? "Nessuna corrispondenza"
+                                  : "Nessuna tabella"}
+                              </p>
+                            )}
+                          </div>
                         )}
+                      </div>
+                    ))}
+                    {!boot.profiles.length && (
+                      <div className="sidebar-empty">
+                        <Cable size={22} />
+                        <p>Collega il tuo primo database</p>
+                        <button onClick={() => openNewConnection()}>
+                          Aggiungi connessione
+                          <Plus size={12} />
+                        </button>
                       </div>
                     )}
                   </div>
-                ))}
-                {!boot.profiles.length && (
-                  <div className="sidebar-empty">
-                    <Cable size={22} />
-                    <p>Collega il tuo primo database</p>
-                    <button onClick={() => openNewConnection()}>
-                      Aggiungi connessione
-                      <Plus size={12} />
-                    </button>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-          {sidebarTab === "saved" && (
-            <div className="saved-list">
-              {savedSorted.map((item) => (
-                <div
-                  className={item.id === activeSavedId ? "active" : ""}
-                  key={item.id}
-                >
-                  <button onClick={() => openQuery(item.query, item.id)}>
-                    <FileCode2 size={14} />
-                    <span>
-                      {item.name}
-                      <small>{ENGINE_LABELS[item.engine]}</small>
-                    </span>
-                  </button>
-                  <button
-                    className="star-button"
-                    aria-label={
-                      item.favorite
-                        ? "Rimuovi dai preferiti"
-                        : "Aggiungi ai preferiti"
-                    }
-                    onClick={() => void favorite(item)}
-                  >
-                    <Star
-                      size={13}
-                      fill={item.favorite ? "currentColor" : "none"}
-                    />
-                  </button>
+                </>
+              )}
+              {sidebarTab === "saved" && (
+                <div className="saved-list">
+                  {savedSorted.map((item) => (
+                    <div
+                      className={item.id === activeSavedId ? "active" : ""}
+                      key={item.id}
+                    >
+                      <button onClick={() => openQuery(item.query, item.id)}>
+                        <FileCode2 size={14} />
+                        <span>
+                          {item.name}
+                          <small>{ENGINE_LABELS[item.engine]}</small>
+                        </span>
+                      </button>
+                      <button
+                        className="star-button"
+                        aria-label={
+                          item.favorite
+                            ? "Rimuovi dai preferiti"
+                            : "Aggiungi ai preferiti"
+                        }
+                        onClick={() => void favorite(item)}
+                      >
+                        <Star
+                          size={13}
+                          fill={item.favorite ? "currentColor" : "none"}
+                        />
+                      </button>
+                    </div>
+                  ))}
+                  {!savedSorted.length && (
+                    <p className="tree-empty">
+                      Salva una query dall’editor per ritrovarla qui.
+                    </p>
+                  )}
                 </div>
-              ))}
-              {!savedSorted.length && (
-                <p className="tree-empty">
-                  Salva una query dall’editor per ritrovarla qui.
-                </p>
+              )}
+              {sidebarTab === "history" && (
+                <div className="history-list">
+                  {boot.history.slice(0, 80).map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => openQuery(item.query)}
+                      title={item.error || item.query}
+                    >
+                      <span
+                        className={`status-dot ${item.success ? "success" : "error"}`}
+                      />
+                      <span>
+                        <code>{item.query.replace(/\s+/g, " ")}</code>
+                        <small>
+                          {item.profileName} · {item.elapsedMs} ms
+                        </small>
+                      </span>
+                    </button>
+                  ))}
+                  {!boot.history.length && (
+                    <p className="tree-empty">
+                      Le query eseguite compariranno qui.
+                    </p>
+                  )}
+                </div>
               )}
             </div>
-          )}
-          {sidebarTab === "history" && (
-            <div className="history-list">
-              {boot.history.slice(0, 80).map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => openQuery(item.query)}
-                  title={item.error || item.query}
-                >
-                  <span
-                    className={`status-dot ${item.success ? "success" : "error"}`}
-                  />
-                  <span>
-                    <code>{item.query.replace(/\s+/g, " ")}</code>
-                    <small>
-                      {item.profileName} · {item.elapsedMs} ms
-                    </small>
-                  </span>
-                </button>
-              ))}
-              {!boot.history.length && (
-                <p className="tree-empty">
-                  Le query eseguite compariranno qui.
-                </p>
-              )}
-            </div>
-          )}
-        </div>
+          </>
+        )}
         <div className="sidebar-bottom">
           <button
             className={view === "settings" ? "active" : ""}
@@ -2202,13 +2512,20 @@ export default function App() {
                 : view === "powershell"
                   ? "PowerShell"
                   : NAV.find((item) => item.id === view)?.label ||
-                    "Impostazioni"}
+                    (view === "home" ? "Inizio" : "Impostazioni")}
             </strong>
-            {profile && (
+            {quickActive ? (
               <>
                 <ChevronRight size={13} />
-                <span className="active-profile-name">{profile.name}</span>
+                <span className="active-profile-name">Simulazione SQLite</span>
               </>
+            ) : (
+              profile && (
+                <>
+                  <ChevronRight size={13} />
+                  <span className="active-profile-name">{profile.name}</span>
+                </>
+              )
             )}
           </div>
           <div className="topbar-actions">
@@ -2226,8 +2543,13 @@ export default function App() {
               ))}
             </select>
             <button
-              className={`assistant-toggle ${assistant ? "active" : ""}`}
-              onClick={() => setAssistant(!assistant)}
+              className={`assistant-toggle ${assistantVisible ? "active" : ""}`}
+              aria-pressed={assistantVisible}
+              onClick={() =>
+                quickActive
+                  ? setQuickAssistant((open) => !open)
+                  : setAssistant((open) => !open)
+              }
             >
               <Bot size={16} />
               <span>Assistente</span>
@@ -2258,6 +2580,71 @@ export default function App() {
           </div>
         ) : (
           <div className="main-content">
+            {!!workspaceTabs.length && (
+              <div
+                className="workspace-open-tabs"
+                aria-label="Schede area di lavoro"
+              >
+                {workspaceTabs.map((tab) => (
+                  <div key={tab} className={view === tab ? "current" : ""}>
+                    <button
+                      type="button"
+                      aria-current={view === tab ? "page" : undefined}
+                      onClick={() => setView(tab)}
+                    >
+                      {tab === "data" && selectedTable
+                        ? objectLabel(selectedTable)
+                        : WORKSPACE_VIEWS[tab]}
+                    </button>
+                    <button
+                      type="button"
+                      className="close-workspace-tab"
+                      aria-label={`Chiudi scheda ${WORKSPACE_VIEWS[tab]}`}
+                      onClick={async () => {
+                        if (
+                          tab === "data" &&
+                          changes.size &&
+                          !(await canLeaveChanges())
+                        )
+                          return;
+                        if (tab === "data") setChanges(new Map());
+                        const rest = workspaceTabs.filter(
+                          (item) => item !== tab,
+                        );
+                        setWorkspaceTabs(rest);
+                        if (view === tab) setView(rest.at(-1) || "home");
+                      }}
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {view === "home" && (
+              <WorkspaceLanding
+                onOpen={() => showFileCenter(true)}
+                onFolder={pickWorkspaceFolder}
+                onWizard={() => setWizard(true)}
+                onResume={() =>
+                  setView(
+                    workspaceTabs.at(-1) ||
+                      (query || documentSnapshot.length > 1
+                        ? "editor"
+                        : "files"),
+                  )
+                }
+                canResume={
+                  !!(
+                    workspaceTabs.length ||
+                    query ||
+                    workspaceFolder ||
+                    fileRecovery ||
+                    documentSnapshot.length > 1
+                  )
+                }
+              />
+            )}
             {filesMounted && (
               <div hidden={view !== "files"} className="file-center-host">
                 {fileQueue.length > 1 && (
@@ -2267,7 +2654,7 @@ export default function App() {
                       <button
                         key={path}
                         className="text-button"
-                        onClick={() => setFilePath(path)}
+                        onClick={() => openWorkspaceFile(path)}
                       >
                         {path.split(/[\\/]/).pop()}
                       </button>
@@ -2276,6 +2663,7 @@ export default function App() {
                 )}
                 <OpenFilesView
                   initialPath={filePath}
+                  initialPathToken={filePathToken}
                   initialRecovery={fileRecovery}
                   onRecoveryChange={fileRecoveryChanged}
                   onRecoveryError={setFileRecoveryError}
@@ -2290,6 +2678,26 @@ export default function App() {
                   onDirtyChange={fileDirtyChanged}
                   onOpenDatabase={openedExistingDatabase}
                   onOpenQuery={openFileQuery}
+                  onFolderChange={setWorkspaceFolder}
+                  onDesignSource={(name, source, format) => {
+                    setSchemaImport({
+                      id: newId(),
+                      name,
+                      source,
+                      format,
+                      engine:
+                        format === "mongodb"
+                          ? "mongodb"
+                          : engine === "mongodb"
+                            ? "sqlite"
+                            : engine,
+                    });
+                    setView("designer");
+                  }}
+                  onGraphSource={(text) => {
+                    setQueryDraft({ id: newId(), query: text });
+                    setView("builder");
+                  }}
                   onImportScript={(path) => {
                     setImportScriptPath(path);
                     setView("transfer");
@@ -2535,11 +2943,18 @@ export default function App() {
                             );
                           };
                           bindSqlTools();
+                          const localCompletion = installLocalCompletion(
+                            monaco,
+                            editor,
+                            () => localCompletionContext.current,
+                            notify,
+                          );
                           const modelListener =
                             editor.onDidChangeModel(bindSqlTools);
                           editor.onDidDispose(() => {
                             modelListener.dispose();
                             sqlToolsRef.current?.dispose();
+                            localCompletion.dispose();
                           });
                           editor.onDidChangeCursorSelection(() => {
                             const model = editor.getModel(),
@@ -2701,6 +3116,44 @@ export default function App() {
                         }}
                       >
                         Completa <kbd>Ctrl Spazio</kbd>
+                      </Button>
+                      {isLocalCompletionEnabled(boot.settings) && (
+                        <Button
+                          onClick={() =>
+                            void editorRef.current
+                              ?.getAction("dbm.requestLocalCompletion")
+                              ?.run()
+                          }
+                        >
+                          <Bot size={14} /> Suggerisci con Ollama
+                        </Button>
+                      )}
+                      <Button
+                        disabled={!query.trim() || documentEngine !== engine}
+                        onClick={() => {
+                          try {
+                            const parameters: unknown =
+                              JSON.parse(parametersText);
+                            if (
+                              !parameters ||
+                              typeof parameters !== "object" ||
+                              Array.isArray(parameters)
+                            )
+                              throw new Error(
+                                "Imposta parametri JSON validi prima di aprire il grafo.",
+                              );
+                            setQueryDraft({
+                              id: newId(),
+                              query: querySelection || query,
+                              parameters: parameters as Record<string, unknown>,
+                            });
+                            setView("builder");
+                          } catch (error) {
+                            notify(errorMessage(error), true);
+                          }
+                        }}
+                      >
+                        <Layers3 size={14} /> Apri nel grafo
                       </Button>
                       <Button onClick={() => setShowElements(!showElements)}>
                         <Layers3 size={14} />
@@ -3082,6 +3535,50 @@ export default function App() {
                 )}
               </div>
             )}
+            {quickActive && (
+              <QuickQueriesView
+                engine="sqlite"
+                schema={quick.session?.schema ?? null}
+                sessionId={quick.session?.sessionId ?? ""}
+                dark={dark}
+                settings={quickSettings}
+                query={quick.query}
+                parametersText={quick.parametersText}
+                editorRef={quickEditorRef}
+                onQueryChange={quick.setQuery}
+                onParametersChange={quick.setParametersText}
+                onRun={() => void quick.execute()}
+                onCancel={() => void quick.cancel()}
+                onReset={async () => {
+                  if (
+                    await confirm(
+                      "Ripristinare l’ambiente di simulazione? Le modifiche eseguite nella copia verranno scartate.",
+                    )
+                  )
+                    await quick.reset();
+                }}
+                onReconnect={() => void quick.open()}
+                canCopySource={!!sessionId && engine === "sqlite"}
+                onCopySource={async () => {
+                  const source = currentSession.current;
+                  if (!source || sessionProfile?.engine !== "sqlite") return;
+                  if (
+                    (await confirm(
+                      `Creare una copia SQLite di «${sessionProfile.name}» per sostituire l’ambiente di simulazione corrente?`,
+                    )) &&
+                    source === currentSession.current
+                  )
+                    await quick.open(source);
+                }}
+                mode={quick.session?.mode}
+                opening={quick.opening}
+                resetting={quick.resetting}
+                busy={quick.busy}
+                error={quick.error}
+                message={quick.message}
+                result={quick.result}
+              />
+            )}
             {view === "data" && (
               <div className="view-content data-workbench">
                 <div className="section-heading">
@@ -3104,28 +3601,17 @@ export default function App() {
                 <div className="panel data-browser-bar">
                   <Field label="Tabella o collezione">
                     <select
-                      value={
-                        selectedTable
-                          ? (selectedTable.schema
-                              ? selectedTable.schema + "."
-                              : "") + selectedTable.name
-                          : ""
-                      }
+                      value={selectedTable ? objectKey(selectedTable) : ""}
                       onChange={(e) => {
                         const found = schema?.tables.find(
-                          (t) =>
-                            (t.schema ? t.schema + "." : "") + t.name ===
-                            e.target.value,
+                          (t) => objectKey(t) === e.target.value,
                         );
                         if (found) void readTable(found, 0, "", false, "");
                       }}
                     >
                       <option value="">Scegli una tabella</option>
                       {schema?.tables.filter(canBrowseData).map((t) => (
-                        <option
-                          key={`${t.schema}.${t.name}`}
-                          value={(t.schema ? t.schema + "." : "") + t.name}
-                        >
+                        <option key={objectKey(t)} value={objectKey(t)}>
                           {t.schema ? t.schema + "." : ""}
                           {t.name}
                         </option>
@@ -3176,15 +3662,15 @@ export default function App() {
                 {selectedTable && activeResult ? (
                   <>
                     <TableDataWorkspace
-                      key={
-                        (selectedTable.schema || "") + "." + selectedTable.name
-                      }
+                      key={objectKey(selectedTable)}
                       result={{ ...activeResult, columns: effectiveColumns }}
                       changes={changes}
-                      editable={editable}
+                      editable={editable && !tableLoading && !graphBusy}
                       canInsert={
                         !profile?.readOnly &&
                         !!selectedTable &&
+                        !tableLoading &&
+                        !graphBusy &&
                         selectedTable.kind !== "view"
                       }
                       tableName={activeTableName || selectedTable.name}
@@ -3273,12 +3759,12 @@ export default function App() {
                           .slice(0, 4)
                           .map((t) => (
                             <Button
-                              key={t.name}
+                              key={objectKey(t)}
                               onClick={() =>
                                 void readTable(t, 0, "", false, "")
                               }
                             >
-                              {t.name}
+                              {objectLabel(t)}
                             </Button>
                           ))
                       )}
@@ -3296,7 +3782,11 @@ export default function App() {
                 connected={!!sessionId && !!schema}
                 readOnly={!!profile?.readOnly}
                 onApply={applyDesign}
-                onOpenQuery={openParameterizedQuery}
+                schemaImport={schemaImport}
+                onSchemaImportHandled={() => setSchemaImport(null)}
+                onOpenQuery={(text, parameters, target) =>
+                  void openParameterizedQuery(text, parameters, "", target)
+                }
                 onCreated={(t) => void readTable(t, 0, "", false, "")}
               />
             )}
@@ -3343,16 +3833,39 @@ export default function App() {
                 onQuery={openQuery}
               />
             )}
-            {(view === "schema" || view === "builder") && (
+            {view === "schema" && (
               <SchemaView
-                key={view}
-                initialTab={view === "builder" ? "builder" : "objects"}
+                initialTab="objects"
+                initialObject={structureObject}
                 schema={schema}
                 sessionId={sessionId}
                 profiles={boot.profiles}
                 onQuery={openQuery}
-                onOpenTable={(table) => void readTable(table)}
+                onOpenTable={(table) => void readTable(table, 0, "", false, "")}
                 query={query}
+              />
+            )}
+            {view === "builder" && (
+              <OperationGraphView
+                engine={engine}
+                schema={schema}
+                dark={dark}
+                sessionId={sessionId}
+                readOnly={!!profile?.readOnly}
+                workspaceKey={profileId}
+                queryDraft={queryDraft}
+                disabled={
+                  running ||
+                  applying ||
+                  schemaApplying ||
+                  transferBusy ||
+                  connecting ||
+                  !!changes.size
+                }
+                onBusyChange={setGraphBusy}
+                onOpenQuery={(text, parameters, target) =>
+                  void openParameterizedQuery(text, parameters, "", target)
+                }
               />
             )}
             {powerShellMounted && (
@@ -3375,12 +3888,12 @@ export default function App() {
             )}
             {view === "codegen" && (
               <CodegenView
-                schema={documentSchema}
-                engine={documentEngine}
+                schema={selectedTable ? schema : documentSchema}
+                engine={selectedTable ? engine : documentEngine}
                 query={query}
                 mode={mode}
                 dark={dark}
-                initialTable={selectedTable?.name}
+                initialTable={selectedTable ?? undefined}
                 queryParameters={(() => {
                   try {
                     return JSON.parse(parametersText);
@@ -3475,16 +3988,22 @@ export default function App() {
         )}
         <footer className="statusbar">
           <span
-            className={`status-dot ${queryError ? "error" : running || connecting ? "working" : "success"}`}
+            className={`status-dot ${(quickActive ? quick.error : queryError) ? "error" : (quickActive ? quick.busy || quick.opening || quick.resetting : running || connecting) ? "working" : "success"}`}
           />
-          <span>{message}</span>
+          <span>{quickActive ? quick.message || "Simulazione" : message}</span>
           <div className="spacer" />
           {changes.size > 0 && (
             <span className="pending-label">
               {changes.size} modifiche in attesa
             </span>
           )}
-          <span>{engine === "mongodb" ? "Extended JSON" : "SQL"}</span>
+          <span>
+            {quickActive
+              ? "Simulazione SQLite"
+              : engine === "mongodb"
+                ? "Extended JSON"
+                : "SQL"}
+          </span>
           <span
             className={`recovery-status ${recoveryStatus}`}
             role="status"
@@ -3588,14 +4107,130 @@ export default function App() {
           </footer>
         </Modal>
       )}
-      {assistant && (
+      <div className="workbench-assistant" hidden={!assistantVisible}>
+        <div
+          className="assistant-resize"
+          role="separator"
+          aria-label="Larghezza assistente"
+          aria-orientation="vertical"
+          aria-valuemin={280}
+          aria-valuemax={520}
+          aria-valuenow={assistantWidth}
+          tabIndex={0}
+          onKeyDown={(event) => {
+            if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+            event.preventDefault();
+            setAssistantWidth((width) =>
+              Math.max(
+                280,
+                Math.min(520, width + (event.key === "ArrowLeft" ? 10 : -10)),
+              ),
+            );
+          }}
+          onPointerDown={(event) => {
+            const handle = event.currentTarget;
+            const start = event.clientX;
+            const width = assistantWidth;
+            handle.setPointerCapture(event.pointerId);
+            const resize = (move: PointerEvent) =>
+              setAssistantWidth(
+                Math.max(280, Math.min(520, width + start - move.clientX)),
+              );
+            handle.addEventListener("pointermove", resize);
+            handle.addEventListener(
+              "lostpointercapture",
+              () => handle.removeEventListener("pointermove", resize),
+              { once: true },
+            );
+          }}
+        />
         <AssistantPanel
-          sessionId={sessionId}
+          open={!quickActive && assistant}
+          sessionId={documentSchema ? sessionId : ""}
+          engine={documentEngine}
+          documentId={activeDocumentId}
           query={query}
-          rows={activeResult?.rows.slice(0, 20) || []}
+          rows={
+            documentSchema && (view === "editor" || view === "data")
+              ? activeResult?.rows.slice(0, 20) || []
+              : []
+          }
           settings={boot.settings}
           onClose={() => setAssistant(false)}
-          onQuery={openQuery}
+          onNewQuery={(text, target) => void openQuery(text, "", target)}
+          onInsertQuery={insertQueryElement}
+          onSettings={() => setView("settings")}
+        />
+        <AssistantPanel
+          open={quickActive && quickAssistant}
+          sessionId=""
+          quickSessionId={quick.session?.sessionId ?? undefined}
+          engine="sqlite"
+          documentId="quick-queries"
+          query={quick.query}
+          rows={quick.result?.sets[0]?.rows.slice(0, 20) ?? []}
+          settings={quickSettings}
+          onClose={() => setQuickAssistant(false)}
+          newQueryLabel="Usa nel simulatore"
+          onNewQuery={async (text) => {
+            if (
+              !quick.query.trim() ||
+              (await confirm("Sostituire il testo della query di simulazione?"))
+            )
+              quick.setQuery(text);
+          }}
+          onInsertQuery={insertQuickQuery}
+          onSettings={() => setView("settings")}
+        />
+      </div>
+      {wizard && (
+        <NewWorkspaceDialog
+          profiles={boot.profiles}
+          onClose={() => setWizard(false)}
+          onNavigate={(route) => {
+            setWizard(false);
+            if (route === "existing") showFileCenter(true);
+            if (route === "design") setView("designer");
+            if (route === "script") setView("transfer");
+            if (route === "connect") openNewConnection("postgresql");
+          }}
+          onCreateFile={async (path) => {
+            if (running || applying || transferBusy)
+              throw new Error(
+                "Attendi il completamento dell’operazione in corso.",
+              );
+            if (!(await canLeaveChanges()))
+              throw new Error("Le modifiche preparate sono ancora aperte.");
+            const opened = await api<OpenedFileDatabase>(
+              "create_workspace_sqlite",
+              { path },
+            );
+            openedLab(opened);
+            setView("designer");
+            notify(`Database SQLite creato in ${opened.profile.filePath}`);
+          }}
+          onCreateServer={async (target, name, collection) => {
+            if (
+              !(await confirm(
+                `Creare il database ${name.trim()} sul server della connessione «${target.name}»?`,
+              ))
+            )
+              throw new Error("Creazione annullata.");
+            const connected =
+              target.id === sessionProfile?.id && sessionId
+                ? { id: sessionId }
+                : await connect(target);
+            if (!connected)
+              throw new Error("La connessione al server non è riuscita.");
+            await api("create_server_database", {
+              sessionId: connected.id,
+              name,
+              collection,
+            });
+            notify(
+              `Database ${name.trim()} creato. Selezionalo in un profilo per iniziare a lavorare.`,
+            );
+          }}
         />
       )}
       {profileDialog !== undefined && (
@@ -3609,9 +4244,9 @@ export default function App() {
               profiles: old.profiles.filter((item) => item.id !== id),
             }));
             if (id === profileId) {
-              void api("close_session", { sessionId }).catch(() => {});
               setProfileId("");
-              setSessionId("");
+              connectionRequest.current++;
+              switchSession("");
               setSchema(null);
               setResult(null);
               setChanges(new Map());
@@ -3627,15 +4262,11 @@ export default function App() {
               ],
             }));
             if (!sessionId) setProfileId(saved.id);
-            else if (saved.id === profileId) {
-              void api("close_session", { sessionId }).catch(() => {});
-              setSessionId("");
-              setSchema(null);
-              setSelectedTable(null);
-              setResult(null);
-              setChanges(new Map());
-            }
-            notify("Connessione salvata.");
+            notify(
+              saved.id === profileId && sessionId
+                ? "Profilo salvato. Riconnetti per usare le nuove impostazioni."
+                : "Connessione salvata.",
+            );
           }}
         />
       )}
@@ -3645,7 +4276,16 @@ export default function App() {
           onClose={() => !exitBusy && setExitDialog(false)}
         >
           <div className="modal-body stack">
-            {running || transferBusy || saveFileBusy || fileOperationBusy ? (
+            {running ||
+            quick.busy ||
+            quick.opening ||
+            quick.resetting ||
+            graphBusy ||
+            applying ||
+            schemaApplying ||
+            transferBusy ||
+            saveFileBusy ||
+            fileOperationBusy ? (
               <Notice tone="warning">
                 È in corso un’operazione sui file o sul database. Attendi il
                 completamento oppure richiedi l’interruzione nell’editor prima
@@ -3683,6 +4323,12 @@ export default function App() {
               busy={exitBusy}
               disabled={
                 running ||
+                quick.busy ||
+                quick.opening ||
+                quick.resetting ||
+                graphBusy ||
+                applying ||
+                schemaApplying ||
                 transferBusy ||
                 saveFileBusy ||
                 fileOperationBusy ||
@@ -3870,6 +4516,7 @@ export default function App() {
         <RecordDialog
           row={record.row}
           columns={effectiveColumns}
+          mongo={engine === "mongodb"}
           editable={
             record.inserting
               ? !profile?.readOnly &&

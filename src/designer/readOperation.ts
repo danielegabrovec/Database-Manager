@@ -1,5 +1,7 @@
 import type { Engine, TableInfo, SchemaSnapshot } from "../types";
 import { quoteIdentifier } from "../components/SchemaBuilders";
+import { maskSqlNonCode } from "../editor/sqlLanguage";
+import { objectKey } from "../utils";
 export type OperationKind =
   | "select"
   | "findByKey"
@@ -100,7 +102,10 @@ export function buildOperation(
   if (
     o.orderBy &&
     !table.columns.some((c) => c.name === o.orderBy) &&
-    !(o.operation === "aggregate" && o.orderBy === "totale")
+    !(
+      o.operation === "aggregate" &&
+      o.orderBy === (engine === "mongodb" ? "total" : "totale")
+    )
   )
     throw new Error("Campo di ordinamento sconosciuto.");
   if (
@@ -112,6 +117,17 @@ export function buildOperation(
   const keys = table.columns.filter((c) => c.primaryKey);
   if (o.operation === "custom") {
     if (!o.custom.trim()) throw new Error("Apri prima una query nell’editor.");
+    if (engine !== "mongodb") {
+      const sql = maskSqlNonCode(o.custom).trim().replace(/;\s*$/, "");
+      if (
+        !/^(SELECT|WITH|VALUES)\b/i.test(sql) ||
+        sql.includes(";") ||
+        /\b(INSERT|UPDATE|DELETE|MERGE|INTO)\b/i.test(sql)
+      )
+        throw new Error(
+          "Inserisci una singola istruzione di lettura per generare questo formato.",
+        );
+    }
     return {
       query: o.custom,
       parameters,
@@ -240,13 +256,31 @@ export function buildOperation(
           !table.columns.some((c) => c.name === o.aggregateColumn)
         )
           throw new Error("Scegli un campo per il calcolo.");
+        if (
+          o.orderBy &&
+          o.orderBy !== "total" &&
+          !o.groupBy.includes(o.orderBy)
+        )
+          throw new Error("Ordina per un campo raggruppato oppure per totale.");
+        const groupKey =
+          o.groupBy.length > 1
+            ? Object.fromEntries(o.groupBy.map((name) => [name, "$" + name]))
+            : o.groupBy[0]
+              ? "$" + o.groupBy[0]
+              : null;
+        const sortKey =
+          o.orderBy === "total"
+            ? "total"
+            : o.groupBy.length > 1
+              ? "_id." + o.orderBy
+              : "_id";
         return {
           aggregate: table.name,
           pipeline: [
             ...(Object.keys(f).length ? [{ $match: f }] : []),
             {
               $group: {
-                _id: o.groupBy[0] ? `$${o.groupBy[0]}` : null,
+                _id: groupKey,
                 total:
                   o.aggregate === "COUNT"
                     ? { $sum: 1 }
@@ -255,6 +289,10 @@ export function buildOperation(
                       },
               },
             },
+            ...(o.orderBy
+              ? [{ $sort: { [sortKey]: o.descending ? -1 : 1 } }]
+              : []),
+            { $limit: Math.max(1, Math.min(10000, o.limit || 100)) },
           ],
           cursor: {},
         };
@@ -334,7 +372,11 @@ export function buildOperation(
       : "*";
     let from = qualified(table);
     if (o.operation === "join") {
-      const other = schema?.tables.find((t) => t.name === o.joinTable);
+      const tables = schema?.tables || [];
+      const byLegacyName = tables.filter((t) => t.name === o.joinTable);
+      const other =
+        tables.find((t) => objectKey(t) === o.joinTable) ||
+        (byLegacyName.length === 1 ? byLegacyName[0] : undefined);
       if (!other || !o.joinLocal || !o.joinForeign)
         throw new Error("Scegli tabella e campi della relazione.");
       if (

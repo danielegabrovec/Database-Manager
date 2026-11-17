@@ -4,6 +4,12 @@ import {
   adoptTable,
   buildCreationPlan,
   buildTableDdl,
+  checkDesignReferenceTarget,
+  designObjectKey,
+  designReference,
+  inDesignNamespace,
+  isEditableDesignObject,
+  qualifiedDesignObject,
   type DesignColumn,
   type DesignTable,
 } from "./schemaProject";
@@ -19,21 +25,27 @@ export interface MigrationPlan {
   warnings: string[];
   sql: string;
   rebuildSqlite: boolean;
+  affectedTableIds: string[];
 }
 
-export function editExistingTable(source: TableInfo): DesignTable {
-  if (!/^(table|collection|partitioned table)$/i.test(source.kind))
+export function editExistingTable(
+  source: TableInfo,
+  engine?: Engine,
+): DesignTable {
+  if (!isEditableDesignObject(source))
     throw new Error("Seleziona una tabella o collezione modificabile.");
-  const table = adoptTable(source);
+  const table = adoptTable(source, engine);
   table.source = structuredClone(source);
   table.columns = table.columns.map((column) => ({
     ...column,
     sourceName: column.name,
     autoIncrement:
-      column.primaryKey &&
-      /\bAUTOINCREMENT\b/i.test(source.definition || "") &&
-      normalType(column.dataType) === "INTEGER",
+      (!!column.identity && !/\bserial\b/i.test(column.dataType)) ||
+      (column.primaryKey &&
+        /\bAUTOINCREMENT\b/i.test(source.definition || "") &&
+        normalType(column.dataType) === "INTEGER"),
   }));
+  if (/^collection\b/i.test(source.kind)) return table;
   table.options.indexes = source.indexes
     .filter(
       (index) =>
@@ -65,6 +77,42 @@ export function editExistingTable(source: TableInfo): DesignTable {
   return table;
 }
 
+export function rebaseAppliedDesign(
+  current: DesignTable[],
+  submitted: DesignTable[],
+  affected: Set<string>,
+  snapshot: SchemaSnapshot,
+): DesignTable[] {
+  return current.map((draft) => {
+    if (!affected.has(draft.id) || !submitted.includes(draft)) return draft;
+    const actual = snapshot.tables.find(
+      (table) =>
+        isEditableDesignObject(table) &&
+        inDesignNamespace(snapshot, table) &&
+        designObjectKey(snapshot.engine, table) ===
+          designObjectKey(snapshot.engine, draft),
+    );
+    if (!actual) return draft;
+    try {
+      const rebased = editExistingTable(actual, snapshot.engine);
+      if (snapshot.engine === "mongodb") {
+        rebased.options.keys = draft.options.keys;
+        const actualNames = new Set(
+          rebased.columns.map((column) => column.name),
+        );
+        rebased.columns.push(
+          ...draft.columns
+            .filter((column) => !actualNames.has(column.name))
+            .map((column) => ({ ...column, unique: false })),
+        );
+      }
+      return { ...rebased, id: draft.id, position: draft.position };
+    } catch {
+      return draft;
+    }
+  });
+}
+
 function columnDefinition(engine: Engine, column: DesignColumn): string {
   // Reuse validation and dialect rules without extracting SQL with a regexp.
   buildTableDdl(engine, {
@@ -82,7 +130,9 @@ const keySignature = (key: {
   column: string;
   table: string;
   targetColumn: string;
-}) => JSON.stringify([key.column, key.table, key.targetColumn]);
+  targetSchema?: string;
+}) =>
+  JSON.stringify([key.column, key.table, key.targetColumn, key.targetSchema]);
 
 /** Explicit migration plan. Unsupported metadata is a blocker, never silently dropped. */
 export function buildMigrationPlan(
@@ -91,9 +141,12 @@ export function buildMigrationPlan(
   schema: SchemaSnapshot | null,
 ): MigrationPlan {
   const changes: SchemaChange[] = [],
+    deferredKeys: SchemaChange[] = [],
     blockers: string[] = [],
     warnings: string[] = [];
   let rebuildSqlite = false;
+  const affected = new Set<string>();
+  let currentId: string | undefined;
   if (!schema || schema.engine !== engine)
     return {
       changes,
@@ -103,22 +156,28 @@ export function buildMigrationPlan(
       warnings,
       sql: "",
       rebuildSqlite,
+      affectedTableIds: [],
     };
   const q = (name: string) => quoteIdentifier(name, engine);
-  const add = (label: string, sql: string, destructive = false) =>
+  const add = (label: string, sql: string, destructive = false) => {
     changes.push({ label, sql, destructive });
+    if (currentId) affected.add(currentId);
+  };
   const names = new Set<string>();
   for (const table of tables) {
     buildTableDdl(engine, table);
-    const key = table.name.toLocaleLowerCase();
+    const key = designObjectKey(engine, table);
     if (names.has(key)) throw new Error(`Tabella duplicata: ${table.name}`);
     names.add(key);
   }
   const fresh = tables.filter((table) => !table.source);
   const creation = buildCreationPlan(engine, fresh, schema);
-  if (creation.pendingTables.length)
+  if (creation.pendingTables.length) {
     add(`Crea ${creation.pendingTables.length} nuove strutture`, creation.sql);
+    for (const table of creation.pendingTables) affected.add(table.id);
+  }
   for (const table of tables.filter((item) => item.source)) {
+    currentId = table.id;
     const source = table.source!;
     const original = schema.tables.find(
       (item) => item.name === source.name && item.schema === source.schema,
@@ -135,6 +194,11 @@ export function buildMigrationPlan(
         schema: value.schema,
         kind: value.kind,
         definition: value.definition,
+        mongo: value.mongo && {
+          validator: value.mongo.validator,
+          validationLevel: value.mongo.validationLevel,
+          validationAction: value.mongo.validationAction,
+        },
         columns: value.columns,
         indexes: [...value.indexes].sort((a, b) =>
           a.name.localeCompare(b.name),
@@ -150,19 +214,20 @@ export function buildMigrationPlan(
       continue;
     }
     if (
-      schema.engine === "postgresql" &&
-      source.schema &&
-      source.schema !== "public"
+      engine === "postgresql" &&
+      designObjectKey(engine, table) !==
+        designObjectKey(engine, { name: table.name, schema: source.schema })
     ) {
       blockers.push(
-        `${source.name}: il designer modifica lo schema public. Usa l’editor SQL per ${source.schema}.`,
+        `${source.name}: spostare una tabella in un altro schema richiede una migrazione dedicata.`,
       );
       continue;
     }
     if (
       table.name !== source.name &&
       schema.tables.some(
-        (item) => item.name === table.name && item.schema === source.schema,
+        (item) =>
+          designObjectKey(engine, item) === designObjectKey(engine, table),
       )
     ) {
       blockers.push(
@@ -170,11 +235,13 @@ export function buildMigrationPlan(
       );
       continue;
     }
-    const baseline = editExistingTable(source);
+    const baseline = editExistingTable(source, engine);
     const ref = (name: string) =>
-      source.schema && engine !== "mongodb"
-        ? `${q(source.schema)}.${q(name)}`
-        : q(name);
+      engine === "postgresql"
+        ? qualifiedDesignObject(engine, { name, schema: source.schema })
+        : source.schema && engine !== "mongodb"
+          ? `${q(source.schema)}.${q(name)}`
+          : q(name);
     const renamedColumns = new Map(
       table.columns
         .filter((c) => c.sourceName)
@@ -203,23 +270,50 @@ export function buildMigrationPlan(
           !!previous.autoIncrement !== !!c.autoIncrement)
       );
     });
-    const oldKeys = baseline.options.keys.map((k) => ({
-      ...k,
-      column: renamedColumns.get(k.column) || k.column,
-      table: k.table === source.name ? table.name : k.table,
-      targetColumn:
-        k.table === source.name
-          ? renamedColumns.get(k.targetColumn) || k.targetColumn
-          : k.targetColumn,
-    }));
+    const oldKeys = baseline.options.keys.map((key) => {
+      const reference = designReference(engine, baseline, key);
+      const target = tables.find(
+        (item) =>
+          item.source &&
+          designObjectKey(engine, item.source) ===
+            designObjectKey(engine, reference),
+      );
+      const targetColumn =
+        target?.columns.find((column) => column.sourceName === key.targetColumn)
+          ?.name || key.targetColumn;
+      if (
+        target &&
+        (target.name !== key.table || targetColumn !== key.targetColumn)
+      )
+        affected.add(table.id);
+      return {
+        ...key,
+        column: renamedColumns.get(key.column) || key.column,
+        table: target?.name || key.table,
+        targetColumn,
+      };
+    });
     const removedKeys = oldKeys.filter(
       (key) =>
         !table.options.keys.some(
-          (next) => keySignature(key) === keySignature(next),
+          (next) =>
+            keySignature(key) ===
+            keySignature({
+              ...next,
+              targetSchema: designReference(engine, table, next).schema,
+            }),
         ),
     );
     const addedKeys = table.options.keys.filter(
-      (key) => !oldKeys.some((old) => keySignature(old) === keySignature(key)),
+      (key) =>
+        !oldKeys.some(
+          (old) =>
+            keySignature(old) ===
+            keySignature({
+              ...key,
+              targetSchema: designReference(engine, table, key).schema,
+            }),
+        ),
     );
     const changedPrimary =
       changed.some(
@@ -229,7 +323,7 @@ export function buildMigrationPlan(
       ) ||
       added.some((c) => c.primaryKey || c.autoIncrement) ||
       deleted.some((c) => c.primaryKey);
-    if (changedPrimary) {
+    if (changedPrimary && engine !== "mongodb") {
       blockers.push(
         `${table.name}: il cambio della chiave primaria o dell’identità richiede una migrazione dedicata.`,
       );
@@ -242,26 +336,65 @@ export function buildMigrationPlan(
         );
         continue;
       }
-      const definition = JSON.parse(buildTableDdl(engine, table));
-      const commands = Array.isArray(definition) ? definition : [definition];
+      function definitions(draft: DesignTable) {
+        const value = JSON.parse(buildTableDdl(engine, draft));
+        const [collection, indexes] = Array.isArray(value) ? value : [value];
+        return {
+          validator: collection.validator || {},
+          validationLevel: collection.validationLevel || "strict",
+          validationAction: collection.validationAction || "error",
+          indexes: new Map<string, object>(
+            (indexes?.indexes || []).map((index: { name: string }) => [
+              index.name,
+              index,
+            ]),
+          ),
+        };
+      }
+      const old = definitions(baseline);
+      const next = definitions(table);
       if (
-        JSON.stringify(table.columns) !== JSON.stringify(baseline.columns) ||
-        table.options.customValidator
+        JSON.stringify(old.validator) !== JSON.stringify(next.validator) ||
+        old.validationLevel !== next.validationLevel ||
+        old.validationAction !== next.validationAction
       )
         add(
           `Aggiorna validatore di ${table.name}`,
           JSON.stringify({
             collMod: table.name,
-            validator: commands[0].validator,
-            validationLevel: "strict",
-            validationAction: "error",
+            validator: next.validator,
+            validationLevel: next.validationLevel,
+            validationAction: next.validationAction,
           }),
         );
-      for (const command of commands.slice(1))
-        add(`Indici di ${table.name}`, JSON.stringify(command));
-      warnings.push(
-        "MongoDB: il validatore si applica alle scritture successive; i documenti esistenti non vengono riscritti o convertiti.",
+      const readonlyIndexes = source.indexes.filter(
+        (index) => !old.indexes.has(index.name),
       );
+      for (const name of next.indexes.keys())
+        if (readonlyIndexes.some((index) => index.name === name))
+          blockers.push(
+            `${table.name}: l’indice ${name} è gestito dal server o ha opzioni avanzate.`,
+          );
+      for (const [name, spec] of old.indexes) {
+        const intended = next.indexes.get(name);
+        if (JSON.stringify(spec) !== JSON.stringify(intended))
+          add(
+            `Rimuovi indice ${table.name}.${name}`,
+            JSON.stringify({ dropIndexes: table.name, index: name }),
+            true,
+          );
+      }
+      for (const [name, spec] of next.indexes) {
+        if (JSON.stringify(old.indexes.get(name)) !== JSON.stringify(spec))
+          add(
+            `Crea indice ${table.name}.${name}`,
+            JSON.stringify({ createIndexes: table.name, indexes: [spec] }),
+          );
+      }
+      if (affected.has(table.id))
+        warnings.push(
+          "MongoDB: il validatore si applica alle scritture successive. I documenti esistenti conservano i valori correnti.",
+        );
       continue;
     }
     const needsRebuild =
@@ -274,6 +407,7 @@ export function buildMigrationPlan(
         /\b(CHECK|COLLATE|GENERATED|WITHOUT\s+ROWID|STRICT|VIRTUAL|DEFERRABLE|ON\s+(DELETE|UPDATE|CONFLICT))\b/i.test(
           definition,
         ) ||
+        source.columns.some((column) => column.generated) ||
         schema.tables.some(
           (object) => object.kind === "trigger" || object.kind === "view",
         )
@@ -427,12 +561,17 @@ export function buildMigrationPlan(
     for (const column of deleted) {
       if (
         source.indexes.some((index) => index.columns.includes(column.name)) ||
-        source.foreignKeys.some((key) => key.column === column.name) ||
+        source.foreignKeys.some(
+          (key) =>
+            key.column === column.name || key.columns?.includes(column.name),
+        ) ||
         schema.tables.some((t) =>
           t.foreignKeys.some(
             (key) =>
               key.referencedTable === source.name &&
-              key.referencedColumn === column.name,
+              (key.referencedSchema || t.schema) === source.schema &&
+              (key.referencedColumn === column.name ||
+                key.referencedColumns?.includes(column.name)),
           ),
         )
       ) {
@@ -464,7 +603,7 @@ export function buildMigrationPlan(
         `Rimuovi indice ${index.name}`,
         engine === "mysql" || engine === "mariadb"
           ? `DROP INDEX ${q(index.name)} ON ${ref(table.name)};`
-          : `DROP INDEX ${source.schema ? q(source.schema) + "." : ""}${q(index.name)};`,
+          : `DROP INDEX ${engine === "postgresql" ? qualifiedDesignObject(engine, { name: index.name, schema: source.schema }) : source.schema ? q(source.schema) + "." + q(index.name) : q(index.name)};`,
       );
     for (const index of table.options.indexes.filter(
       (i) =>
@@ -479,41 +618,70 @@ export function buildMigrationPlan(
           .map((name) => q(name.trim()))
           .join(", ")});`,
       );
-    if (removedKeys.length)
-      blockers.push(
-        `${table.name}: la rimozione di chiavi esterne richiede il nome del vincolo dal server e una migrazione dedicata.`,
+    for (const key of removedKeys) {
+      const index = oldKeys.indexOf(key);
+      const name = source.foreignKeys[index]?.name;
+      if (!name || engine === "sqlite") {
+        blockers.push(
+          `${table.name}: la rimozione di una chiave esterna richiede il nome del vincolo dal server.`,
+        );
+        continue;
+      }
+      add(
+        `Rimuovi la chiave esterna ${name} da ${table.name}`,
+        `ALTER TABLE ${ref(table.name)} ${engine === "postgresql" ? "DROP CONSTRAINT" : "DROP FOREIGN KEY"} ${q(name)};`,
+        true,
       );
+    }
     for (const key of addedKeys) {
-      const target = schema.tables.find((t) => t.name === key.table);
+      const requested = designReference(engine, table, key);
+      const targetDraft = tables.find(
+        (candidate) =>
+          designObjectKey(engine, candidate) ===
+          designObjectKey(engine, requested),
+      );
+      const target = schema.tables.find(
+        (t) =>
+          isEditableDesignObject(t) &&
+          designObjectKey(engine, t) === designObjectKey(engine, requested),
+      );
       const targetColumn = target?.columns.find(
         (c) => c.name === key.targetColumn,
       );
-      if (
-        !table.columns.some((c) => c.name === key.column) ||
-        !targetColumn ||
-        !(
-          (targetColumn.primaryKey &&
-            target!.columns.filter((c) => c.primaryKey).length === 1) ||
+      let validTarget =
+        !!targetColumn &&
+        ((targetColumn.primaryKey &&
+          target!.columns.filter((c) => c.primaryKey).length === 1) ||
           target!.indexes.some(
             (i) =>
               i.unique &&
               !i.partial &&
               i.columns.length === 1 &&
               i.columns[0] === key.targetColumn,
-          )
-        )
-      ) {
+          ));
+      if (targetDraft) {
+        try {
+          checkDesignReferenceTarget(engine, targetDraft, key.targetColumn);
+          validTarget = true;
+        } catch {
+          validTarget = false;
+        }
+      }
+      if (!table.columns.some((c) => c.name === key.column) || !validTarget) {
         blockers.push(
           `${table.name}: la nuova relazione richiede una colonna destinazione PK/UNIQUE singola effettiva.`,
         );
         continue;
       }
-      add(
-        `Collega ${table.name}.${key.column} → ${key.table}.${key.targetColumn}`,
-        `ALTER TABLE ${ref(table.name)} ADD FOREIGN KEY (${q(key.column)}) REFERENCES ${source.schema ? q(source.schema) + "." : ""}${q(key.table)} (${q(key.targetColumn)});`,
-      );
+      deferredKeys.push({
+        label: `Collega ${table.name}.${key.column} → ${key.table}.${key.targetColumn}`,
+        sql: `ALTER TABLE ${ref(table.name)} ADD FOREIGN KEY (${q(key.column)}) REFERENCES ${engine === "postgresql" ? qualifiedDesignObject(engine, requested) : ref(key.table)} (${q(key.targetColumn)});`,
+        destructive: false,
+      });
+      affected.add(table.id);
     }
   }
+  changes.push(...deferredKeys);
   if (engine === "mysql" || engine === "mariadb" || engine === "mongodb")
     warnings.push(
       "Questo motore può applicare le operazioni DDL separatamente. In caso di errore controlla lo schema prima di riprovare; non è promesso un rollback globale.",
@@ -537,5 +705,6 @@ export function buildMigrationPlan(
     warnings: [...new Set(warnings)],
     sql,
     rebuildSqlite,
+    affectedTableIds: [...affected],
   };
 }

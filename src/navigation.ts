@@ -12,12 +12,15 @@ import {
   Table2,
   Terminal,
   Wrench,
+  Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 export type WorkspaceView =
+  | "home"
   | "files"
   | "editor"
+  | "quick"
   | "data"
   | "designer"
   | "library"
@@ -39,10 +42,11 @@ export interface NavigationItem {
 export const NAV_FLAT: readonly NavigationItem[] = [
   { id: "files", label: "Apri file e database", icon: FolderOpen },
   { id: "editor", label: "Editor SQL / MongoDB", icon: Terminal },
+  { id: "quick", label: "Query rapide", icon: Zap },
   { id: "data", label: "Dati tabella", icon: Table2 },
   { id: "schema", label: "Struttura e relazioni", icon: GitFork },
   { id: "designer", label: "Designer database", icon: Plus },
-  { id: "builder", label: "Compositore query", icon: Layers3 },
+  { id: "builder", label: "Grafo operazioni", icon: Layers3 },
   { id: "powershell", label: "Catalogo PowerShell", icon: Terminal },
   { id: "library", label: "Catalogo Query", icon: BookOpen },
   { id: "codegen", label: "Generatore codice", icon: Braces },
@@ -85,7 +89,7 @@ export const NAV_GROUPS: readonly NavigationGroup[] = [
   },
 ];
 
-export const NAV_STANDALONE = items("files", "editor", "laboratory");
+export const NAV_STANDALONE = items("files", "editor", "quick", "laboratory");
 
 export function navigationGroupFor(
   view: WorkspaceView,

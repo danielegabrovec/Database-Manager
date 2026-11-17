@@ -280,7 +280,9 @@ impl Session {
         self.execute_unlocked(query, parameters).await
     }
     pub(crate) async fn execute_unlocked(
-        &self, query: &str, parameters: BTreeMap<String, Value>,
+        &self,
+        query: &str,
+        parameters: BTreeMap<String, Value>,
     ) -> Result<QueryResult, String> {
         let start = Instant::now();
         let mongo_job = if matches!(self.handle, Handle::Mongo { .. }) {
@@ -429,11 +431,15 @@ impl Session {
         }
         if let Handle::Mongo { db } = &self.handle {
             let mut tables = Vec::new();
-            for name in db
-                .list_collection_names()
-                .await
-                .map_err(|e| e.to_string())?
-            {
+            let mut collections = db.list_collections().await.map_err(|e| e.to_string())?;
+            while let Some(spec) = collections.try_next().await.map_err(|e| e.to_string())? {
+                use mongodb::{bson::Bson, results::CollectionType};
+                let name = spec.name;
+                let kind = match spec.collection_type {
+                    CollectionType::View => "view",
+                    CollectionType::Timeseries => "timeseries",
+                    _ => "collection",
+                };
                 let coll = db.collection::<mongodb::bson::Document>(&name);
                 let mut columns = BTreeMap::new();
                 let mut cursor = coll
@@ -452,21 +458,59 @@ impl Session {
                     }
                 }
                 let mut indexes = Vec::new();
-                let mut cursor = coll.list_indexes().await.map_err(|e| e.to_string())?;
-                while let Some(i) = cursor.try_next().await.map_err(|e| e.to_string())? {
-                    let options = i.options.unwrap_or_default();
-                    indexes.push(IndexInfo {
-                        name: options.name.unwrap_or_default(),
-                        columns: i.keys.keys().cloned().collect(),
-                        unique: options.unique.unwrap_or(false),
-                        partial: options.partial_filter_expression.is_some(),
-                    });
+                if kind != "view" {
+                    let mut cursor = coll.list_indexes().await.map_err(|e| e.to_string())?;
+                    while let Some(i) = cursor.try_next().await.map_err(|e| e.to_string())? {
+                        let options = i.options.unwrap_or_default();
+                        let plain_options =
+                            serde_json::to_value(&options).ok().is_some_and(|value| {
+                                value.as_object().is_some_and(|fields| {
+                                    fields.iter().all(|(key, value)| {
+                                        value.is_null()
+                                            || matches!(
+                                                key.as_str(),
+                                                "name" | "unique" | "v" | "ns" | "background"
+                                            )
+                                    })
+                                })
+                            });
+                        indexes.push(IndexInfo {
+                            name: options.name.unwrap_or_default(),
+                            columns: i.keys.keys().cloned().collect(),
+                            unique: options.unique.unwrap_or(false),
+                            partial: options.partial_filter_expression.is_some(),
+                            mongo_editable: Some(
+                                plain_options
+                                    && i.keys
+                                        .values()
+                                        .all(|key| matches!(key, Bson::Int32(1) | Bson::Int64(1))),
+                            ),
+                        });
+                    }
                 }
+                let enum_text = |value: Value| value.as_str().map(str::to_owned);
                 tables.push(TableInfo {
                     name,
-                    kind: "collection (schema campionato: max 20 documenti)".into(),
+                    kind: kind.into(),
                     columns: columns.into_values().collect(),
                     indexes,
+                    mongo: Some(MongoCollectionInfo {
+                        validator: spec
+                            .options
+                            .validator
+                            .map(|v| Bson::Document(v).into_canonical_extjson()),
+                        validation_level: spec
+                            .options
+                            .validation_level
+                            .and_then(|v| serde_json::to_value(v).ok())
+                            .and_then(enum_text),
+                        validation_action: spec
+                            .options
+                            .validation_action
+                            .and_then(|v| serde_json::to_value(v).ok())
+                            .and_then(enum_text),
+                        sampled: true,
+                    }),
                     ..Default::default()
                 });
             }
@@ -474,6 +518,7 @@ impl Session {
                 database: self.profile.database.clone(),
                 engine: self.profile.engine.clone(),
                 tables,
+                ..Default::default()
             });
         }
         let pg = self.profile.engine == "postgresql";
@@ -492,14 +537,31 @@ impl Session {
         {
             let name = row.get("name").map(|v| v.text()).unwrap_or_default();
             let schema = row.get("schema").map(|v| v.text()).unwrap_or_default();
-            let escaped = name.replace('\'', "''");
-            let ns = schema.replace('\'', "''");
-            let colsql = if pg {
-                format!("SELECT c.column_name AS name,c.data_type,c.is_nullable,c.column_default AS default_value,EXISTS(SELECT 1 FROM information_schema.table_constraints tc JOIN information_schema.key_column_usage k ON tc.constraint_name=k.constraint_name AND tc.constraint_schema=k.constraint_schema WHERE tc.constraint_type='PRIMARY KEY' AND tc.table_schema=c.table_schema AND tc.table_name=c.table_name AND k.column_name=c.column_name) AS pk FROM information_schema.columns c WHERE c.table_schema='{ns}' AND c.table_name='{escaped}' ORDER BY c.ordinal_position")
+            let (ns, tbl, params) = if pg {
+                (
+                    "$1",
+                    "$2",
+                    BTreeMap::from([
+                        ("1".into(), Value::String(schema.clone())),
+                        ("2".into(), Value::String(name.clone())),
+                    ]),
+                )
             } else {
-                format!("SELECT column_name AS name,column_type AS data_type,is_nullable AS is_nullable,column_default AS default_value,column_key AS pk FROM information_schema.columns WHERE table_schema='{ns}' AND table_name='{escaped}' ORDER BY ordinal_position")
+                (
+                    ":ns",
+                    ":table",
+                    BTreeMap::from([
+                        ("ns".into(), Value::String(schema.clone())),
+                        ("table".into(), Value::String(name.clone())),
+                    ]),
+                )
             };
-            let cr = self.execute_unlocked(&colsql, BTreeMap::new()).await?;
+            let colsql = if pg {
+                format!("SELECT c.column_name AS name,c.data_type,c.is_nullable,c.column_default AS default_value,(c.is_identity='YES' OR COALESCE(c.column_default LIKE 'nextval(%',false)) AS identity_flag,(c.is_generated='ALWAYS') AS generated_flag,EXISTS(SELECT 1 FROM information_schema.table_constraints tc JOIN information_schema.key_column_usage k ON tc.constraint_name=k.constraint_name AND tc.constraint_schema=k.constraint_schema AND tc.table_schema=k.table_schema AND tc.table_name=k.table_name WHERE tc.constraint_type='PRIMARY KEY' AND tc.table_schema=c.table_schema AND tc.table_name=c.table_name AND k.column_name=c.column_name) AS pk FROM information_schema.columns c WHERE c.table_schema={ns} AND c.table_name={tbl} ORDER BY c.ordinal_position")
+            } else {
+                format!("SELECT column_name AS name,column_type AS data_type,is_nullable AS is_nullable,column_default AS default_value,column_key AS pk,(EXTRA LIKE '%auto_increment%') AS identity_flag,(EXTRA IN ('VIRTUAL GENERATED','STORED GENERATED','PERSISTENT GENERATED')) AS generated_flag FROM information_schema.columns WHERE table_schema={ns} AND table_name={tbl} ORDER BY ordinal_position")
+            };
+            let cr = self.execute_unlocked(&colsql, params.clone()).await?;
             let columns = cr
                 .sets
                 .first()
@@ -520,36 +582,47 @@ impl Session {
                             } else {
                                 Some(r["default_value"].text())
                             },
+                            identity: matches!(r["identity_flag"].text().as_str(), "true" | "1"),
+                            generated: matches!(r["generated_flag"].text().as_str(), "true" | "1"),
                         })
                         .collect()
                 })
                 .unwrap_or_default();
             let fk_sql = if pg {
-                format!("SELECT kcu.column_name AS col,ccu.table_name AS ref_table,ccu.column_name AS ref_col FROM information_schema.table_constraints tc JOIN information_schema.key_column_usage kcu ON tc.constraint_name=kcu.constraint_name AND tc.constraint_schema=kcu.constraint_schema JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name=tc.constraint_name AND ccu.constraint_schema=tc.constraint_schema WHERE tc.constraint_type='FOREIGN KEY' AND tc.table_schema='{ns}' AND tc.table_name='{escaped}'")
+                format!("SELECT f.conname AS constraint_name, a.attname AS col, rn.nspname AS ref_schema, rt.relname AS ref_table, ra.attname AS ref_col, rc.update_rule, rc.delete_rule FROM pg_constraint f JOIN pg_class t ON t.oid=f.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace JOIN pg_class rt ON rt.oid=f.confrelid JOIN pg_namespace rn ON rn.oid=rt.relnamespace CROSS JOIN LATERAL unnest(f.conkey, f.confkey) WITH ORDINALITY AS k(local_key, remote_key, position) JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=k.local_key JOIN pg_attribute ra ON ra.attrelid=rt.oid AND ra.attnum=k.remote_key CROSS JOIN LATERAL (SELECT CASE f.confupdtype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS update_rule, CASE f.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS delete_rule) rc WHERE f.contype='f' AND n.nspname={ns} AND t.relname={tbl} ORDER BY f.oid,k.position")
             } else {
-                format!("SELECT column_name AS col,referenced_table_name AS ref_table,referenced_column_name AS ref_col FROM information_schema.key_column_usage WHERE table_schema='{ns}' AND table_name='{escaped}' AND referenced_table_name IS NOT NULL")
+                format!("SELECT k.constraint_name,k.column_name AS col,k.referenced_table_schema AS ref_schema,k.referenced_table_name AS ref_table,k.referenced_column_name AS ref_col,r.update_rule,r.delete_rule FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.constraint_name=k.constraint_name AND r.table_name=k.table_name WHERE k.table_schema={ns} AND k.table_name={tbl} AND k.referenced_table_name IS NOT NULL ORDER BY k.constraint_name,k.ordinal_position")
             };
-            let fk = self.execute_unlocked(&fk_sql, BTreeMap::new()).await?;
-            let foreign_keys = fk
-                .sets
-                .first()
-                .map(|s| {
-                    s.rows
-                        .iter()
-                        .map(|r| ForeignKeyInfo {
-                            column: r["col"].text(),
-                            referenced_table: r["ref_table"].text(),
-                            referenced_column: r["ref_col"].text(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            let fk = self.execute_unlocked(&fk_sql, params.clone()).await?;
+            let mut foreign_keys = BTreeMap::new();
+            if let Some(result) = fk.sets.first() {
+                for row in &result.rows {
+                    let name = row["constraint_name"].text();
+                    let column = row["col"].text();
+                    let referenced_column = row["ref_col"].text();
+                    let constraint =
+                        foreign_keys
+                            .entry(name.clone())
+                            .or_insert_with(|| ForeignKeyInfo {
+                                name: Some(name),
+                                column: column.clone(),
+                                referenced_table: row["ref_table"].text(),
+                                referenced_column: referenced_column.clone(),
+                                referenced_schema: Some(row["ref_schema"].text()),
+                                on_update: Some(row["update_rule"].text()),
+                                on_delete: Some(row["delete_rule"].text()),
+                                ..Default::default()
+                            });
+                    constraint.columns.push(column);
+                    constraint.referenced_columns.push(referenced_column);
+                }
+            }
             let index_sql = if pg {
-                format!("SELECT ic.relname AS name,ix.indisunique AS unique_flag,(ix.indpred IS NOT NULL) AS partial_flag,pg_get_indexdef(ix.indexrelid,k.position,true) AS col FROM pg_class tc JOIN pg_namespace n ON n.oid=tc.relnamespace JOIN pg_index ix ON ix.indrelid=tc.oid JOIN pg_class ic ON ic.oid=ix.indexrelid CROSS JOIN LATERAL generate_series(1,ix.indnkeyatts) AS k(position) WHERE tc.relname='{escaped}' AND n.nspname='{ns}' ORDER BY ic.relname,k.position")
+                format!("SELECT ic.relname AS name,ix.indisunique AS unique_flag,(ix.indpred IS NOT NULL) AS partial_flag,pg_get_indexdef(ix.indexrelid,k.position,true) AS col FROM pg_class tc JOIN pg_namespace n ON n.oid=tc.relnamespace JOIN pg_index ix ON ix.indrelid=tc.oid JOIN pg_class ic ON ic.oid=ix.indexrelid CROSS JOIN LATERAL generate_series(1,ix.indnkeyatts) AS k(position) WHERE tc.relname={tbl} AND n.nspname={ns} ORDER BY ic.relname,k.position")
             } else {
-                format!("SELECT index_name AS name,non_unique AS non_unique,column_name AS col FROM information_schema.statistics WHERE table_schema='{ns}' AND table_name='{escaped}' ORDER BY index_name,seq_in_index")
+                format!("SELECT index_name AS name,non_unique AS non_unique,column_name AS col FROM information_schema.statistics WHERE table_schema={ns} AND table_name={tbl} ORDER BY index_name,seq_in_index")
             };
-            let ir = self.execute_unlocked(&index_sql, BTreeMap::new()).await?;
+            let ir = self.execute_unlocked(&index_sql, params).await?;
             let mut indexes: BTreeMap<String, IndexInfo> = BTreeMap::new();
             if let Some(set) = ir.sets.first() {
                 for r in &set.rows {
@@ -566,6 +639,7 @@ impl Session {
                         partial: pg
                             && r.get("partial_flag").map(CellValue::text).as_deref()
                                 == Some("true"),
+                        ..Default::default()
                     });
                     item.columns
                         .push(r.get("col").map(CellValue::text).unwrap_or_default());
@@ -581,7 +655,7 @@ impl Session {
                 }
                 .into(),
                 columns,
-                foreign_keys,
+                foreign_keys: foreign_keys.into_values().collect(),
                 indexes: indexes.into_values().collect(),
                 ..Default::default()
             });
@@ -606,10 +680,17 @@ impl Session {
                 });
             }
         }
+        let namespaces = if pg {
+            self.execute_unlocked("SELECT schema_name AS name FROM information_schema.schemata WHERE schema_name NOT IN ('pg_catalog','information_schema') AND schema_name NOT LIKE 'pg_%' ORDER BY schema_name", BTreeMap::new()).await?
+                .sets.into_iter().flat_map(|set| set.rows).filter_map(|row| row.get("name").map(CellValue::text)).collect()
+        } else {
+            Vec::new()
+        };
         Ok(SchemaSnapshot {
             database: self.profile.database.clone(),
             engine: self.profile.engine.clone(),
             tables,
+            namespaces,
         })
     }
     pub async fn apply(
@@ -617,12 +698,21 @@ impl Session {
         table: &str,
         changes: Vec<DataChange>,
     ) -> Result<QueryResult, String> {
+        self.apply_ref(TableRef::Legacy(table.into()), changes)
+            .await
+    }
+
+    pub async fn apply_ref(
+        &self,
+        table: TableRef,
+        changes: Vec<DataChange>,
+    ) -> Result<QueryResult, String> {
         if self.profile.read_only {
             return Err("Connessione in sola lettura".into());
         }
         if let Handle::Sqlite { conn, .. } = &self.handle {
             let c = conn.clone();
-            let t = table.to_owned();
+            let t = table.local_name()?.to_owned();
             return tokio::task::spawn_blocking(move || {
                 sqlite::apply(&mut *c.lock().map_err(|e| e.to_string())?, &t, &changes)
             })
@@ -631,15 +721,14 @@ impl Session {
         }
         if let Handle::Mongo { db } = &self.handle {
             let _guard = self.serial.lock().await;
-            return crate::mongo_edit::apply(db, table, changes).await;
+            return crate::mongo_edit::apply(db, table.local_name()?, changes).await;
         }
         let metadata = self.introspect().await?;
-        let name = table.rsplit('.').next().unwrap_or(table);
-        let meta = metadata
-            .tables
-            .iter()
-            .find(|t| t.name == name)
-            .ok_or("Tabella sconosciuta")?;
+        let meta = table.resolve(&metadata)?;
+        if meta.kind != "table" {
+            return Err("Seleziona una tabella modificabile.".into());
+        }
+        let name = &meta.name;
         let keys = meta
             .columns
             .iter()

@@ -1,8 +1,14 @@
 import { Plus, Trash2 } from "lucide-react";
 import type { ColumnInfo, Engine, SchemaSnapshot, TableInfo } from "../types";
+import { objectKey } from "../utils";
 import { Button, Field } from "./UI";
 export interface DesignerOptions {
-  keys: { column: string; table: string; targetColumn: string }[];
+  keys: {
+    column: string;
+    table: string;
+    targetColumn: string;
+    targetSchema?: string;
+  }[];
   indexes: { name: string; columns: string; unique: boolean }[];
   validator: string;
   customValidator?: boolean;
@@ -23,6 +29,7 @@ export function extendDdl(
   tableName: string,
   columns: ColumnInfo[],
   options: DesignerOptions,
+  schema?: string,
 ) {
   if (engine === "mongodb")
     return JSON.stringify(
@@ -35,11 +42,15 @@ export function extendDdl(
       2,
     );
   const quote = (name: string) => quoteIdentifier(name, engine);
+  const relation = (name: string, namespace = schema) =>
+    engine === "postgresql" && namespace
+      ? `${quote(namespace)}.${quote(name)}`
+      : quote(name);
   if (options.keys.length) {
     const keys = options.keys.map((key) => {
       if (!key.column || !key.table || !key.targetColumn)
         throw new Error("Completa tutti i campi delle chiavi esterne.");
-      return `FOREIGN KEY (${quote(key.column)}) REFERENCES ${quote(key.table)} (${quote(key.targetColumn)})`;
+      return `FOREIGN KEY (${quote(key.column)}) REFERENCES ${relation(key.table, key.targetSchema)} (${quote(key.targetColumn)})`;
     });
     sql = sql.replace(/\n\);\s*$/, `,\n  ${keys.join(",\n  ")}\n);`);
   }
@@ -54,13 +65,14 @@ export function extendDdl(
       throw new Error(
         "Un indice contiene una colonna non presente nella tabella.",
       );
-    sql += `\nCREATE ${index.unique ? "UNIQUE " : ""}INDEX ${quote(index.name)} ON ${quote(tableName)} (${names.map(quote).join(", ")});`;
+    sql += `\nCREATE ${index.unique ? "UNIQUE " : ""}INDEX ${quote(index.name)} ON ${relation(tableName)} (${names.map(quote).join(", ")});`;
   }
   return sql;
 }
 export function DesignerExtras({
   engine,
   tableName,
+  tableSchema,
   columns,
   tables,
   options,
@@ -70,6 +82,7 @@ export function DesignerExtras({
 }: {
   engine: Engine;
   tableName: string;
+  tableSchema?: string;
   columns: ColumnInfo[];
   tables: TableInfo[];
   options: DesignerOptions;
@@ -88,6 +101,10 @@ export function DesignerExtras({
         />
       </Field>
     );
+  const targetKey = (key: DesignerOptions["keys"][number]) =>
+    key.table
+      ? objectKey({ name: key.table, schema: key.targetSchema || tableSchema })
+      : "";
   return (
     <div className="stack">
       <div className="separator" />
@@ -154,21 +171,32 @@ export function DesignerExtras({
           <span>→</span>
           <select
             aria-label="Tabella destinazione relazione"
-            value={key.table}
-            onChange={(e) =>
+            value={targetKey(key)}
+            onChange={(e) => {
+              const target = tables.find(
+                (table) => objectKey(table) === e.target.value,
+              );
               onChange({
                 ...options,
                 keys: options.keys.map((v, i) =>
                   i === index
-                    ? { ...v, table: e.target.value, targetColumn: "" }
+                    ? {
+                        ...v,
+                        table: target?.name || "",
+                        targetSchema: target?.schema,
+                        targetColumn: "",
+                      }
                     : v,
                 ),
-              })
-            }
+              });
+            }}
           >
             <option value="">Tabella collegata</option>
             {tables.map((t) => (
-              <option key={t.name}>{t.name}</option>
+              <option key={objectKey(t)} value={objectKey(t)}>
+                {t.schema ? `${t.schema}.` : ""}
+                {t.name}
+              </option>
             ))}
           </select>
           <select
@@ -185,7 +213,7 @@ export function DesignerExtras({
           >
             <option value="">Colonna collegata</option>
             {tables
-              .find((t) => t.name === key.table)
+              .find((t) => objectKey(t) === targetKey(key))
               ?.columns.map((c) => (
                 <option key={c.name}>{c.name}</option>
               ))}
@@ -204,6 +232,29 @@ export function DesignerExtras({
           </button>
         </div>
       ))}
+      <DesignerIndexes
+        tableName={tableName}
+        columns={columns}
+        options={options}
+        onChange={onChange}
+      />
+    </div>
+  );
+}
+
+export function DesignerIndexes({
+  tableName,
+  columns,
+  options,
+  onChange,
+}: {
+  tableName: string;
+  columns: ColumnInfo[];
+  options: DesignerOptions;
+  onChange: (next: DesignerOptions) => void;
+}) {
+  return (
+    <>
       <div className="panel-heading">
         <h3>Indici</h3>
         <Button
@@ -282,7 +333,7 @@ export function DesignerExtras({
           </button>
         </div>
       ))}
-    </div>
+    </>
   );
 }
 export interface QueryOptions {

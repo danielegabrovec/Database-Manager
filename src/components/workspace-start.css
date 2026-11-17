@@ -1,0 +1,156 @@
+.workspace-landing {
+  display: grid;
+  gap: 24px;
+  width: min(100%, 780px);
+  margin: clamp(24px, 9vh, 100px) auto 24px;
+  padding: 0 24px;
+}
+
+.workspace-landing h1 {
+  font-size: clamp(26px, 3vw, 38px);
+  margin-bottom: 8px;
+}
+
+.workspace-landing-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 12px;
+}
+
+.workspace-landing-actions button {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 17px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-align: left;
+}
+
+.workspace-landing-actions button:hover {
+  background: var(--surface-raised);
+  border-color: var(--accent);
+}
+
+.workspace-landing-actions svg {
+  color: var(--accent);
+}
+
+.workspace-landing-actions span {
+  display: grid;
+  gap: 4px;
+}
+
+.workspace-files {
+  display: flex;
+  flex: 0 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border-soft);
+  padding: 3px 8px 8px;
+}
+
+.workspace-files-heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.workspace-files-heading h2 {
+  font-size: 13px;
+  margin-left: 6px;
+}
+
+.workspace-files-root {
+  display: block;
+  padding: 3px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-files-path {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 3px 6px;
+}
+
+.workspace-files-path input {
+  min-width: 0;
+  flex: 1;
+}
+
+.workspace-files-path-action {
+  align-self: flex-start;
+  margin: 3px 6px;
+  padding: 2px 0;
+  text-align: left;
+  font-size: 12px;
+}
+
+.workspace-files-body {
+  overflow: auto;
+  max-height: min(29vh, 270px);
+  min-height: 0;
+  padding: 3px 1px;
+}
+
+.workspace-files-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.workspace-files-children {
+  padding-left: 10px;
+  border-left: 1px solid var(--border-soft);
+  margin-left: 8px;
+}
+
+.workspace-files-row {
+  width: 100%;
+  border: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  background: transparent;
+  text-align: left;
+  border-radius: 4px;
+}
+
+.workspace-files-row:hover {
+  background: var(--surface-raised);
+}
+
+.workspace-files-row:focus-visible {
+  outline-offset: -2px;
+}
+
+.workspace-files-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-files-row svg {
+  color: var(--subtle);
+}
+
+.workspace-files-leaf {
+  padding-inline-start: 24px;
+}
+
+.workspace-files-error,
+.workspace-files-message {
+  color: var(--muted);
+  margin: 4px 6px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.workspace-files-error {
+  color: var(--danger);
+}
