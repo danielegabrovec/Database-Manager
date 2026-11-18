@@ -63,6 +63,13 @@ pub struct ColumnInfo {
     pub primary_key: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_value: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub identity: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub generated: bool,
+}
+fn is_false(value: &bool) -> bool {
+    !value
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -72,6 +79,8 @@ pub struct IndexInfo {
     pub unique: bool,
     #[serde(default)]
     pub partial: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mongo_editable: Option<bool>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -79,6 +88,66 @@ pub struct ForeignKeyInfo {
     pub column: String,
     pub referenced_table: String,
     pub referenced_column: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub referenced_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub referenced_schema: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_update: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_delete: Option<String>,
+}
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum TableRef {
+    Qualified {
+        name: String,
+        schema: Option<String>,
+    },
+    Legacy(String),
+}
+impl TableRef {
+    pub fn resolve<'a>(&self, metadata: &'a SchemaSnapshot) -> Result<&'a TableInfo, String> {
+        let mut candidates = metadata.tables.iter().filter(|table| match self {
+            Self::Qualified { name, schema } => &table.name == name && &table.schema == schema,
+            Self::Legacy(name) => {
+                &table.name == name
+                    || table
+                        .schema
+                        .as_ref()
+                        .is_some_and(|schema| format!("{schema}.{}", table.name) == *name)
+            }
+        });
+        let table = candidates.next().ok_or("Oggetto non trovato")?;
+        if candidates.next().is_some() {
+            return Err("Nome oggetto ambiguo. Indicare schema e nome separatamente.".into());
+        }
+        Ok(table)
+    }
+
+    pub fn local_name(&self) -> Result<&str, String> {
+        match self {
+            Self::Qualified { name, schema: None } | Self::Legacy(name) => Ok(name),
+            _ => Err("Questa connessione non usa uno schema per identificare l’oggetto.".into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MongoCollectionInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validator: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_action: Option<String>,
+    #[serde(default)]
+    pub sampled: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -92,6 +161,8 @@ pub struct TableInfo {
     pub row_count: Option<u64>,
     #[serde(default)]
     pub definition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mongo: Option<MongoCollectionInfo>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +170,8 @@ pub struct SchemaSnapshot {
     pub database: String,
     pub engine: String,
     pub tables: Vec<TableInfo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespaces: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CellValue {
@@ -213,6 +286,7 @@ pub fn column(name: impl Into<String>, data_type: impl Into<String>) -> ColumnIn
         nullable: true,
         primary_key: false,
         default_value: None,
+        ..Default::default()
     }
 }
 pub fn unique_column_names(columns: &mut [ColumnInfo]) {

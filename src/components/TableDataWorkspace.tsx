@@ -237,6 +237,7 @@ export function TableDataWorkspace({
   function saveLocalRecord(
     values: Record<string, string>,
     nullFields: string[],
+    mongoValues?: DataRow,
   ) {
     if (!localRecord) return;
     try {
@@ -249,8 +250,9 @@ export function TableDataWorkspace({
         throw new Error(
           "Il nuovo record non è più preparato. Riapri la scheda.",
         );
-      const parsed: DataRow = {};
-      for (const column of result.columns) {
+      const parsed: DataRow = mongoValues ?? {};
+      for (const column of mongoValues ? [] : result.columns) {
+        if (column.generated) continue;
         const isNull = nullFields.includes(column.name);
         if (isNull && (column.primaryKey || column.defaultValue)) continue;
         parsed[column.name] = isNull
@@ -751,6 +753,8 @@ export function TableDataWorkspace({
           row={localRecord.values}
           columns={result.columns}
           editable
+          mongo={engine === "mongodb"}
+          inserting
           onClose={() => setLocalRecord(null)}
           onSave={saveLocalRecord}
         />

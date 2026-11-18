@@ -30,12 +30,15 @@ export interface ColumnInfo {
   nullable: boolean;
   primaryKey: boolean;
   defaultValue?: string;
+  identity?: boolean;
+  generated?: boolean;
 }
 export interface IndexInfo {
   name: string;
   columns: string[];
   unique?: boolean;
   partial?: boolean;
+  mongoEditable?: boolean;
 }
 export interface ForeignKeyInfo {
   name?: string;
@@ -44,23 +47,35 @@ export interface ForeignKeyInfo {
   referencedTable?: string;
   referencedColumn?: string;
   referencedColumns?: string[];
+  referencedSchema?: string;
+  onUpdate?: string;
+  onDelete?: string;
   targetTable?: string;
   targetColumns?: string[];
 }
-export interface TableInfo {
+export interface ObjectRef {
   name: string;
   schema?: string;
+}
+export interface TableInfo extends ObjectRef {
   kind: string;
   columns: ColumnInfo[];
   indexes: IndexInfo[];
   foreignKeys: ForeignKeyInfo[];
   rowCount?: number;
   definition?: string | null;
+  mongo?: {
+    validator?: Record<string, unknown>;
+    validationLevel?: string;
+    validationAction?: string;
+    sampled?: boolean;
+  };
 }
 export interface SchemaSnapshot {
   tables: TableInfo[];
   database: string;
   engine: Engine;
+  namespaces?: string[];
 }
 export type CellType =
   | "null"
@@ -75,6 +90,7 @@ export type CellType =
 export interface CellValue {
   type: CellType;
   value?: string | boolean;
+  nativeType?: string;
 }
 export type DataRow = Record<string, CellValue>;
 export interface ResultSet {

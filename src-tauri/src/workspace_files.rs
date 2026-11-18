@@ -802,17 +802,25 @@ fn atomic_replace(source: &Path, target: &Path, metadata: &fs::Metadata) -> Resu
 }
 
 pub fn list_directory(path: &str, offset: usize) -> Result<DirectoryPage> {
-    reject_device_path(path)?;
+    list_directory_within(path, offset, None)
+}
+
+pub fn list_directory_within(
+    path: &str,
+    offset: usize,
+    root: Option<&str>,
+) -> Result<DirectoryPage> {
     if offset > 100_000 {
         return Err(
             "Paginazione oltre 100.000 voci: scegliere una sottocartella più specifica.".into(),
         );
     }
-    let path = PathBuf::from(path)
-        .canonicalize()
-        .map_err(|_| "Cartella non trovata o non accessibile.".to_string())?;
-    if !path.is_dir() {
-        return Err("Il percorso selezionato non è una cartella.".into());
+    let path = canonical_existing_directory(path)?;
+    if let Some(root) = root {
+        let root = canonical_existing_directory(root)?;
+        if !path.starts_with(root) {
+            return Err("La cartella selezionata è fuori dalla cartella di lavoro.".into());
+        }
     }
     let mut iterator = fs::read_dir(&path).map_err(error)?.skip(offset);
     let mut entries = Vec::new();
@@ -1081,6 +1089,21 @@ mod tests {
             .map(|e| e.name.clone())
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(names.len(), 205);
+    }
+
+    #[test]
+    fn directory_listing_enforces_the_selected_root() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("work");
+        let nested = root.join("files");
+        let sibling = base.path().join("workspace-other");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir(&sibling).unwrap();
+        let boundary = root.to_str().unwrap();
+        assert!(list_directory_within(nested.to_str().unwrap(), 0, Some(boundary)).is_ok());
+        assert!(list_directory_within(sibling.to_str().unwrap(), 0, Some(boundary))
+            .unwrap_err()
+            .contains("fuori"));
     }
     #[test]
     fn utf16_rejects_invalid_surrogates_instead_of_replacement_characters() {

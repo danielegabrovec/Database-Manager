@@ -601,7 +601,10 @@ describe("compositore MongoDB: JSON valido e tipi del protocollo", () => {
     );
     expect(command).toMatchObject({
       aggregate: "people",
-      pipeline: [{ $group: { _id: "$active", total: { $sum: 1 } } }],
+      pipeline: [
+        { $group: { _id: "$active", total: { $sum: 1 } } },
+        { $limit: 100 },
+      ],
       cursor: {},
     });
   });

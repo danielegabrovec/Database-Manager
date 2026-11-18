@@ -14,9 +14,15 @@ import {
   Check,
 } from "lucide-react";
 import { api } from "../api";
-import type { Engine, GeneratedProject, Mode, SchemaSnapshot } from "../types";
-import { ENGINE_LABELS, ENGINES, LANGUAGES } from "../types";
-import { canBrowseData, errorMessage } from "../utils";
+import type {
+  Engine,
+  GeneratedProject,
+  Mode,
+  ObjectRef,
+  SchemaSnapshot,
+} from "../types";
+import { ENGINE_LABELS, LANGUAGES } from "../types";
+import { canBrowseData, errorMessage, objectKey } from "../utils";
 import { Button, Field, Notice, SectionHeader } from "../components/UI";
 import { PathInput } from "../components/PathInput";
 import {
@@ -36,7 +42,9 @@ const ARTIFACTS = [
   ["schema", "Funzione di creazione schema"],
   ["project", "Programma completo CRUD"],
   ["rest", "API REST CRUD"],
-  ["script", "Script SQL / MongoDB"],
+  ["script", "Script della query"],
+  ["schemaScript", "Script dello schema"],
+  ["migration", "Script della migrazione"],
 ];
 const OPERATIONS: [OperationKind, string][] = [
   ["select", "Leggi tutti / campi selezionati"],
@@ -53,6 +61,7 @@ export function CodegenView({
   mode,
   dark,
   schemaScript,
+  migrationScript,
   designSource = false,
   onDesign,
   onOpenQuery,
@@ -65,8 +74,9 @@ export function CodegenView({
   mode: Mode;
   dark: boolean;
   schemaScript?: string;
+  migrationScript?: string;
   designSource?: boolean;
-  initialTable?: string;
+  initialTable?: ObjectRef;
   queryParameters?: Record<string, unknown>;
   onDesign?: () => void;
   onOpenQuery?: (query: string, parameters?: Record<string, unknown>) => void;
@@ -75,7 +85,6 @@ export function CodegenView({
     JSON.stringify(queryParameters, null, 2),
   );
   const [language, setLanguage] = useState("Python");
-  const [selectedEngine, setEngine] = useState(engine);
   const [artifact, setArtifact] = useState("read");
   const [table, setTable] = useState("");
   const [options, setOptions] = useState<ReadOptions>({
@@ -96,17 +105,41 @@ export function CodegenView({
     () => setCustomParameterText(JSON.stringify(queryParameters, null, 2)),
     [JSON.stringify(queryParameters)],
   );
+  const initialTableKey = initialTable ? objectKey(initialTable) : "";
   useEffect(() => {
-    setEngine(engine);
-  }, [engine]);
-  useEffect(() => {
-    if (initialTable) setTable(initialTable);
-  }, [initialTable]);
+    if (initialTableKey) {
+      setTable(initialTableKey);
+      setOptions({ ...INITIAL_READ, custom: "" });
+    }
+  }, [initialTableKey]);
   useEffect(() => setOptions((old) => ({ ...old, custom: query })), [query]);
-  const dataTables = schema?.tables.filter(canBrowseData) || [];
-  const activeTable = dataTables.find((t) => t.name === table) || dataTables[0];
+  const selectedEngine = schema?.engine ?? engine;
+  const dataTables = useMemo(
+    () => schema?.tables.filter(canBrowseData) || [],
+    [schema],
+  );
+  const activeTable =
+    dataTables.find((t) => objectKey(t) === table) || dataTables[0];
+  const activeDefinition = schemaScript || activeTable?.definition || "";
   const languageId = LANGUAGE_IDS[language] || language.toLowerCase();
-  const isRead = ["read", "function", "repository"].includes(artifact);
+  const isRead = ["read", "function", "repository", "script"].includes(
+    artifact,
+  );
+  const isWrite = ["writes", "project", "rest"].includes(artifact);
+  const artifactError = !activeTable
+    ? "Apri una struttura o seleziona una tabella."
+    : artifact === "migration" && !migrationScript
+      ? "Apri un piano di migrazione valido nel Designer."
+      : (artifact === "schemaScript" || artifact === "schema") &&
+          !activeDefinition
+        ? "Apri lo schema nel Designer o usa l’esportazione nativa da Trasferimenti."
+        : (artifact === "rest" ||
+              (artifact === "schema" && selectedEngine === "mongodb")) &&
+            !["rust", "python", "javascript", "typescript"].includes(languageId)
+          ? "Scegli Rust, Python, JavaScript o TypeScript per questo formato."
+          : isWrite && /view/i.test(activeTable.kind)
+            ? "Seleziona una tabella o collezione per generare codice CRUD."
+            : "";
   const built = useMemo<
     ReturnType<typeof buildOperation> & { error: string }
   >(() => {
@@ -157,13 +190,14 @@ export function CodegenView({
   const fingerprint = JSON.stringify({
     languageId,
     artifact,
-    table: activeTable?.name,
-    columns: activeTable?.columns,
+    table: allModels && artifact === "model" ? dataTables : activeTable,
     options,
+    built: isRead ? built : null,
     engine: selectedEngine,
     educational,
     allModels,
     schemaScript,
+    migrationScript,
     customParameterText,
   });
   const stale = !!project && fingerprint !== generationKey;
@@ -174,32 +208,31 @@ export function CodegenView({
     setBusy("generate");
     setError("");
     try {
-      if (!activeTable)
-        throw new Error(
-          "Crea prima una struttura nel Designer database o apri un database.",
-        );
+      if (!activeTable || artifactError) throw new Error(artifactError);
       if (built.error && isRead) throw new Error(built.error);
-      if (
-        artifact === "rest" &&
-        !["rust", "python", "javascript", "typescript"].includes(languageId)
-      )
-        throw new Error(
-          "Le API REST sono disponibili in Rust, Python, JavaScript e TypeScript. Gli altri formati supportano tutti i dodici linguaggi.",
-        );
       let output: GeneratedProject;
-      if (artifact === "script" && schemaScript) {
+      if (artifact === "schemaScript" || artifact === "migration") {
+        const name = artifact === "schemaScript" ? "schema" : "migrazione";
         output = {
           files: [
             {
-              path: selectedEngine === "mongodb" ? "schema.json" : "schema.sql",
-              content: schemaScript,
+              path: `${name}.${selectedEngine === "mongodb" ? "json" : "sql"}`,
+              content:
+                artifact === "migration" ? migrationScript! : activeDefinition,
             },
           ],
           command:
             "Apri lo script nella connessione del motore corrispondente e rivedilo prima di eseguire.",
-          notes: [
-            "Script ricavato dal progetto visuale con tabelle, chiavi, relazioni e indici.",
-          ],
+          notes:
+            artifact === "migration"
+              ? [
+                  "Rivedi il piano, verifica la destinazione e prova su una copia prima di applicarlo.",
+                ]
+              : [
+                  schemaScript
+                    ? "Script delle strutture del progetto visuale."
+                    : "Definizione dell’oggetto selezionato.",
+                ],
         };
       } else if (artifact === "model" && allModels) {
         output = { files: [], command: "", notes: [] };
@@ -246,6 +279,13 @@ export function CodegenView({
                     : "select",
             table: activeTable.name,
             tableSchema: activeTable.schema || null,
+            schemaDefinition: activeDefinition,
+            writeColumnMetadata: activeTable.columns.map((column) => ({
+              name: column.name,
+              defaultValue: column.defaultValue,
+              identity: column.identity,
+              generated: column.generated,
+            })),
             columns:
               artifact === "schema"
                 ? []
@@ -256,7 +296,7 @@ export function CodegenView({
                   : activeTable.columns,
             query:
               artifact === "schema"
-                ? schemaScript || activeTable.definition || ""
+                ? activeDefinition
                 : isRead
                   ? built.template || built.query
                   : "",
@@ -264,17 +304,6 @@ export function CodegenView({
             educational,
           },
         });
-        if (schemaScript && artifact === "project") {
-          const path =
-            selectedEngine === "mongodb" ? "schema.json" : "schema.sql";
-          output.files = output.files.filter(
-            (f) => f.path !== path && f.path !== "database.sql",
-          );
-          output.files.push({ path, content: schemaScript });
-          output.notes.push(
-            "Lo script dello schema contiene l’intero progetto visuale; il codice operativo usa la tabella selezionata.",
-          );
-        }
       }
       setProject(output);
       setFileIndex(0);
@@ -313,15 +342,21 @@ export function CodegenView({
     }
   }
   function tryQuery() {
-    const params = Object.fromEntries(
-      built.parameters.map((p, i) => [
-        selectedEngine === "postgresql" ? String(i + 1) : p.name,
-        p.value,
-      ]),
-    );
+    const params =
+      options.operation === "custom"
+        ? JSON.parse(customParameterText)
+        : Object.fromEntries(
+            built.parameters.map((p, i) => [
+              selectedEngine === "postgresql" ? String(i + 1) : p.name,
+              p.value,
+            ]),
+          );
     onOpenQuery?.(built.query, params);
   }
   const file = project?.files[fileIndex];
+  const joinTable = dataTables.find(
+    (target) => objectKey(target) === options.joinTable,
+  );
   const editorLanguage =
     (
       {
@@ -356,7 +391,7 @@ export function CodegenView({
             ? "Il codice delle tue strutture"
             : "Generatore visuale di codice"
         }
-        description="Scegli cosa leggere, come filtrare e il formato da incollare nel tuo programma. Puoi partire dal database oppure da uno schema disegnato."
+        description="Esporta query, funzioni, progetti CRUD o script di struttura dal database o dal Designer."
         action={
           onDesign && (
             <Button onClick={onDesign}>
@@ -374,21 +409,12 @@ export function CodegenView({
         </Notice>
       )}
       <div className="code-workbench-settings">
-        <Field label="1 · Motore">
-          <select
-            value={selectedEngine}
-            onChange={(e) => setEngine(e.target.value as Engine)}
-          >
-            {ENGINES.map((e) => (
-              <option key={e} value={e}>
-                {ENGINE_LABELS[e]}
-              </option>
-            ))}
-          </select>
+        <Field label="Motore della sorgente">
+          <input value={ENGINE_LABELS[selectedEngine]} readOnly />
         </Field>
-        <Field label="2 · Tabella o collezione">
+        <Field label="Tabella o collezione">
           <select
-            value={activeTable?.name || ""}
+            value={activeTable ? objectKey(activeTable) : ""}
             onChange={(e) => {
               setTable(e.target.value);
               setOptions({ ...INITIAL_READ, custom: query });
@@ -398,16 +424,19 @@ export function CodegenView({
               Definisci o apri uno schema
             </option>
             {dataTables.map((t) => (
-              <option key={`${t.schema}.${t.name}`} value={t.name}>
+              <option key={objectKey(t)} value={objectKey(t)}>
                 {t.schema ? t.schema + "." : ""}
                 {t.name}
               </option>
             ))}
           </select>
         </Field>
-        <Field label="3 · Linguaggio">
+        <Field label="Linguaggio">
           <select
             value={language}
+            disabled={["script", "schemaScript", "migration"].includes(
+              artifact,
+            )}
             onChange={(e) => setLanguage(e.target.value)}
           >
             {LANGUAGES.map((l) => (
@@ -415,12 +444,17 @@ export function CodegenView({
             ))}
           </select>
         </Field>
-        <Field label="4 · Cosa generare">
+        <Field label="Formato da generare">
           <select
             value={artifact}
             onChange={(e) => setArtifact(e.target.value)}
           >
-            {ARTIFACTS.map(([id, label]) => (
+            {ARTIFACTS.filter(
+              ([id]) =>
+                id !== "migration" ||
+                !!migrationScript ||
+                artifact === "migration",
+            ).map(([id, label]) => (
               <option key={id} value={id}>
                 {label}
               </option>
@@ -434,6 +468,7 @@ export function CodegenView({
             <WandSparkles size={17} />
             Componi l’operazione
           </h2>
+          {artifactError && activeTable && <Notice>{artifactError}</Notice>}
           {isRead && (
             <Field label="Operazione di lettura">
               <select
@@ -504,56 +539,56 @@ export function CodegenView({
           )}
           {artifact === "schema" && (
             <Notice>
-              Genera una funzione da chiamare con una connessione già aperta
-              nella tua applicazione e include lo schema SQL. Usa il designer
-              per definire più tabelle, indici e relazioni. Disponibile nei
-              dodici linguaggi per SQLite, PostgreSQL, MySQL e MariaDB; per
-              MongoDB esporta lo schema JSON.
+              Genera una funzione per applicare lo schema usando una connessione
+              aperta dalla tua applicazione. I quattro motori SQL supportano i
+              dodici linguaggi. Per MongoDB sono disponibili Rust, Python,
+              JavaScript e TypeScript e lo script dello schema JSON.
             </Notice>
           )}
-          {activeTable && artifact !== "schema" && (
-            <>
-              <h3>
-                Campi{" "}
-                {artifact === "model"
-                  ? "del modello"
-                  : artifact === "writes"
-                    ? "del payload CRUD"
-                    : "da leggere"}
-              </h3>
-              <div className="code-field-checks">
-                {activeTable.columns.map((c) => (
-                  <label className="check" key={c.name}>
-                    <input
-                      type="checkbox"
-                      disabled={["writes", "project", "rest"].includes(
-                        artifact,
-                      )}
-                      checked={
-                        !options.columns.length ||
-                        options.columns.includes(c.name)
-                      }
-                      onChange={(e) => {
-                        const current = options.columns.length
-                          ? options.columns
-                          : activeTable.columns.map((c) => c.name);
-                        patch({
-                          columns: e.target.checked
-                            ? [...new Set([...current, c.name])]
-                            : current.filter((n) => n !== c.name),
-                        });
-                      }}
-                    />
-                    {c.name}
-                    <small>
-                      {c.dataType}
-                      {c.primaryKey ? " · PK" : ""}
-                    </small>
-                  </label>
-                ))}
-              </div>
-            </>
-          )}
+          {activeTable &&
+            ((isRead && !["custom", "aggregate"].includes(options.operation)) ||
+              artifact === "model") && (
+              <>
+                <h3>
+                  Campi {artifact === "model" ? "del modello" : "da leggere"}
+                </h3>
+                <div className="code-field-checks">
+                  {activeTable.columns.map((c) => (
+                    <label className="check" key={c.name}>
+                      <input
+                        type="checkbox"
+                        disabled={
+                          (artifact === "model" && allModels) ||
+                          (options.columns.length === 1 &&
+                            options.columns[0] === c.name) ||
+                          (!options.columns.length &&
+                            activeTable.columns.length === 1)
+                        }
+                        checked={
+                          !options.columns.length ||
+                          options.columns.includes(c.name)
+                        }
+                        onChange={(e) => {
+                          const current = options.columns.length
+                            ? options.columns
+                            : activeTable.columns.map((c) => c.name);
+                          patch({
+                            columns: e.target.checked
+                              ? [...new Set([...current, c.name])]
+                              : current.filter((n) => n !== c.name),
+                          });
+                        }}
+                      />
+                      {c.name}
+                      <small>
+                        {c.dataType}
+                        {c.primaryKey ? " · PK" : ""}
+                      </small>
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
           {artifact === "model" && (
             <label className="check">
               <input
@@ -681,9 +716,15 @@ export function CodegenView({
                 >
                   <option value="">Scegli una tabella</option>
                   {dataTables
-                    .filter((t) => t.name !== activeTable?.name)
+                    .filter(
+                      (t) =>
+                        !activeTable || objectKey(t) !== objectKey(activeTable),
+                    )
                     .map((t) => (
-                      <option key={t.name}>{t.name}</option>
+                      <option key={objectKey(t)} value={objectKey(t)}>
+                        {t.schema ? `${t.schema}.` : ""}
+                        {t.name}
+                      </option>
                     ))}
                 </select>
               </Field>
@@ -715,11 +756,9 @@ export function CodegenView({
                   onChange={(e) => patch({ joinForeign: e.target.value })}
                 >
                   <option value="">Campo destinazione</option>
-                  {dataTables
-                    .find((t) => t.name === options.joinTable)
-                    ?.columns.map((c) => (
-                      <option key={c.name}>{c.name}</option>
-                    ))}
+                  {joinTable?.columns.map((c) => (
+                    <option key={c.name}>{c.name}</option>
+                  ))}
                 </select>
               </Field>
             </div>
@@ -789,9 +828,22 @@ export function CodegenView({
                   onChange={(e) => patch({ orderBy: e.target.value })}
                 >
                   <option value="">Nessun ordinamento</option>
-                  {activeTable?.columns.map((c) => (
-                    <option key={c.name}>{c.name}</option>
-                  ))}
+                  {options.operation === "aggregate" && (
+                    <option
+                      value={selectedEngine === "mongodb" ? "total" : "totale"}
+                    >
+                      Totale
+                    </option>
+                  )}
+                  {activeTable?.columns
+                    .filter(
+                      (column) =>
+                        options.operation !== "aggregate" ||
+                        options.groupBy.includes(column.name),
+                    )
+                    .map((c) => (
+                      <option key={c.name}>{c.name}</option>
+                    ))}
                 </select>
               </Field>
               <Field label="Massimo risultati">
@@ -855,7 +907,7 @@ export function CodegenView({
           </label>
           <Button
             variant="primary"
-            disabled={!activeTable || !!(isRead && built.error)}
+            disabled={!!artifactError || !!(isRead && built.error)}
             busy={busy === "generate"}
             onClick={generate}
           >
@@ -868,7 +920,9 @@ export function CodegenView({
           <div className="code-output-heading">
             <h2>
               <Code2 size={17} />
-              {language} · {ARTIFACTS.find(([id]) => id === artifact)?.[1]}
+              {!["script", "schemaScript", "migration"].includes(artifact) &&
+                `${language} · `}
+              {ARTIFACTS.find(([id]) => id === artifact)?.[1]}
             </h2>
             {project && (
               <Button disabled={stale} onClick={copy}>

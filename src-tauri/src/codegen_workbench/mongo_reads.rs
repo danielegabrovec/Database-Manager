@@ -33,11 +33,27 @@ pub(super) fn generate(request: &WorkbenchRequest) -> Result<GeneratedProject, S
     }
     let aggregate = input.get("aggregate").is_some() && input.get("pipeline").is_some();
     let template = if aggregate {
-        if !input["pipeline"].is_array() {
-            return Err("pipeline deve essere un array.".into());
+        if input["aggregate"].as_str() != Some(request.table.as_str()) {
+            return Err(
+                "La collezione di aggregate deve corrispondere alla sorgente selezionata.".into(),
+            );
+        }
+        let stages = input["pipeline"]
+            .as_array()
+            .ok_or("pipeline deve essere un array.")?;
+        if stages
+            .iter()
+            .any(|stage| stage.get("$out").is_some() || stage.get("$merge").is_some())
+        {
+            return Err("La lettura MongoDB non ammette fasi di scrittura $out o $merge.".into());
         }
         json!({"pipeline":input["pipeline"]})
     } else if input.get("find").is_some() && input.get("filter").is_some() {
+        if input["find"].as_str() != Some(request.table.as_str()) {
+            return Err(
+                "La collezione di find deve corrispondere alla sorgente selezionata.".into(),
+            );
+        }
         if !input["filter"].is_object() {
             return Err("filter deve essere un oggetto.".into());
         }
@@ -64,6 +80,21 @@ pub(super) fn generate(request: &WorkbenchRequest) -> Result<GeneratedProject, S
         || declared.iter().any(|name| !references.contains(*name))
     {
         return Err("I marker MongoDB {\"$param\":\"nome\"} devono corrispondere esattamente ai parametri dichiarati.".into());
+    }
+    if request.artifact == "script" {
+        let query = if aggregate || (input.get("find").is_some() && input.get("filter").is_some()) {
+            input
+        } else {
+            json!({"find":request.table,"filter":input,"limit":100})
+        };
+        return Ok(GeneratedProject {
+            files: vec![
+                file("query.mongodb.json", serde_json::to_string_pretty(&query).unwrap()),
+                file("parameters.json", serde_json::to_string_pretty(&parameter_examples(&request.parameters)).unwrap()),
+            ],
+            command: String::new(),
+            notes: vec!["Comando MongoDB con i parametri in un file separato. Prima di eseguirlo interpreta i marcatori $param con il driver o la funzione di lettura esportata.".into()],
+        });
     }
     let text = serde_json::to_string(&template).unwrap();
     let pairs = vec![

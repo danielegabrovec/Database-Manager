@@ -11,11 +11,11 @@ pub(super) fn generate(ctx: &Context) -> Result<GeneratedProject, String> {
     let t = build(ctx)?;
     let mut files = vec![file(&t.path, &t.source)];
     let mut notes = Vec::new();
+    files.extend(t.files);
+    files.extend(common_files(ctx, &t.command, &t.dependencies));
     if ctx.req.output == "snippet" {
         notes.push(format!("Esempio driver autonomo. Dipendenze: {}. Il programma esegue list di default; passa insert/update/delete e un payload JSON per scrivere.",t.dependencies));
     } else {
-        files.extend(t.files);
-        files.extend(common_files(ctx, &t.command, &t.dependencies));
         files.extend(super::script(ctx)?.files);
     }
     if ctx.req.language == "cpp" {
@@ -33,7 +33,12 @@ pub(super) fn common_files(ctx: &Context, command: &str, dependencies: &str) -> 
     } else {
         format!("DATABASE_URL={}\nDATABASE_NAME=database\n", ctx.url())
     };
-    let readme=format!("# Esempio {} / {}\n\nDipendenze: {}\n\nImpostare DATABASE_URL e, per MongoDB, DATABASE_NAME nel terminale. `.env.example` è documentazione: il programma legge le variabili d'ambiente, non carica automaticamente il file. Non salvare credenziali nel repository.\n\n## Esecuzione\n\n```powershell\n$env:DATABASE_URL = '{}'\n{}\n```\n\nL'esecuzione senza argomenti legge al massimo 100 righe con la query configurata. Le operazioni `insert`, `update`, `delete` prendono un oggetto JSON come secondo argomento. `update` richiede tutti i campi non chiave; `delete` richiede tutte le chiavi. `insert` include anche le chiavi: gli ID sono forniti dal chiamante. Provare su un database di sviluppo. Le tabelle devono già esistere.\n\nValori binari: array JSON di byte; date e decimal: stringhe senza arrotondamento. Per MongoDB usare Extended JSON, ad esempio {{\"_id\":{{\"$oid\":\"507f1f77bcf86cd799439011\"}}}}. Le modifiche sono esplicite e i valori SQL sono parametri.\n\nLe query libere possono leggere colonne arbitrarie; i CRUD usano le colonne selezionate nel generatore. I tipi specifici del motore non mappabili producono un errore e non sono convertiti silenziosamente.\n",ctx.req.language,ctx.req.engine,dependencies,if ctx.req.engine=="sqlite"{"./database.sqlite"}else{ctx.url()},command);
+    let fields = if ctx.req.engine == "mongodb" {
+        "I documenti accettano Extended JSON. `update` e `delete` richiedono `_id`.".to_owned()
+    } else {
+        format!("Campi di `insert`: `{}`. Campi di `update`: `{}` più la chiave. Campi chiave: `{}`. Una lista vuota per `insert` indica che il motore genera tutti i valori. Le colonne gestite dal motore restano a suo carico.", json!(ctx.columns), json!(ctx.nonkeys), json!(ctx.keys))
+    };
+    let readme=format!("# Esempio {} / {}\n\nDipendenze: {}\n\nImpostare DATABASE_URL e, per MongoDB, DATABASE_NAME nel terminale. `.env.example` descrive le variabili d’ambiente. Conservare le credenziali fuori dal repository.\n\n## Esecuzione\n\n```powershell\n$env:DATABASE_URL = '{}'\n{}\n```\n\nL’esecuzione senza argomenti legge al massimo 100 righe. Le operazioni `insert`, `update`, `delete` accettano un oggetto JSON come secondo argomento. Prova su un database di sviluppo con le strutture già predisposte.\n\n{fields}\n\nPer valori binari usare array JSON di byte. Per date e decimali usare stringhe. Le modifiche sono esplicite e i valori SQL sono parametri.\n",ctx.req.language,ctx.req.engine,dependencies,if ctx.req.engine=="sqlite"{"./database.sqlite"}else{ctx.url()},command);
     vec![
         file(".env.example", example),
         file(

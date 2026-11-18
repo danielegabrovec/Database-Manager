@@ -25,6 +25,8 @@ describe("navigazione del workspace", () => {
       "laboratory",
       "library",
       "powershell",
+      "project",
+      "quick",
       "schema",
       "settings",
       "transfer",
@@ -56,6 +58,7 @@ describe("navigazione del workspace", () => {
     expect(NAV_STANDALONE.map((item) => item.id)).toEqual([
       "files",
       "editor",
+      "quick",
       "laboratory",
     ]);
   });

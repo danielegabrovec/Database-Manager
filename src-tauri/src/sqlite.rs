@@ -15,6 +15,22 @@ use std::{
 
 pub const MAX_ROWS: usize = 10_000;
 pub fn open(profile: &ConnectionProfile) -> Result<Connection, String> {
+    open_profile(profile, false)
+}
+
+pub fn create_file(path: &str) -> Result<(), String> {
+    if !Path::new(path).is_absolute() {
+        return Err("Indica un percorso assoluto per il nuovo file SQLite.".into());
+    }
+    let profile = ConnectionProfile {
+        file_path: path.into(),
+        create_if_missing: true,
+        ..Default::default()
+    };
+    open_profile(&profile, true).map(drop)
+}
+
+fn open_profile(profile: &ConnectionProfile, exclusive: bool) -> Result<Connection, String> {
     if profile.file_path.trim().is_empty() {
         return Err("Seleziona un file SQLite.".into());
     }
@@ -22,7 +38,7 @@ pub fn open(profile: &ConnectionProfile) -> Result<Connection, String> {
     let path = Path::new(&profile.file_path);
     let mut created = false;
     if !memory {
-        if path.exists() {
+        if !exclusive && path.exists() {
             crate::workspace_files::validate_sqlite_header(path)?;
         } else {
             if !profile.create_if_missing {
@@ -72,7 +88,15 @@ pub fn open(profile: &ConnectionProfile) -> Result<Connection, String> {
     Ok(conn)
 }
 pub fn protect_lab(conn: &Connection) {
-    conn.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
+    protect_scratch(conn, false);
+}
+
+pub(crate) fn protect_quick_query(conn: &Connection) {
+    protect_scratch(conn, true);
+}
+
+fn protect_scratch(conn: &Connection, memory_only: bool) {
+    conn.authorizer(Some(move |ctx: AuthContext<'_>| match ctx.action {
         AuthAction::Attach { .. } | AuthAction::Detach { .. } => Authorization::Deny,
         AuthAction::Function { function_name }
             if [
@@ -97,6 +121,11 @@ pub fn protect_lab(conn: &Connection) {
         {
             Authorization::Deny
         }
+        AuthAction::Pragma { pragma_name, pragma_value: Some(_) }
+            if memory_only && [
+                "temp_store", "trusted_schema", "max_page_count", "page_size",
+                "hard_heap_limit", "soft_heap_limit",
+            ].contains(&pragma_name.to_ascii_lowercase().as_str()) => Authorization::Deny,
         _ => Authorization::Allow,
     }));
     let _ = conn.set_limit(
@@ -252,7 +281,7 @@ pub fn introspect(conn: &Connection, database: &str) -> Result<SchemaSnapshot, S
     for (name, kind, definition) in objects {
         let quoted = quote_ident("sqlite", &name);
         let mut cols = conn
-            .prepare(&format!("PRAGMA table_info({quoted})"))
+            .prepare(&format!("PRAGMA table_xinfo({quoted})"))
             .map_err(|e| e.to_string())?;
         let mut columns: Vec<ColumnInfo> = cols
             .query_map([], |r| {
@@ -262,19 +291,15 @@ pub fn introspect(conn: &Connection, database: &str) -> Result<SchemaSnapshot, S
                     nullable: r.get::<_, i64>(3)? == 0,
                     default_value: r.get(4)?,
                     primary_key: r.get::<_, i64>(5)? > 0,
+                    generated: matches!(r.get::<_, i64>(6)?, 2 | 3),
+                    ..Default::default()
                 })
             })
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
-        if columns.iter().filter(|c| c.primary_key).count() == 1 {
-            for c in &mut columns {
-                if c.primary_key && c.data_type.eq_ignore_ascii_case("INTEGER") {
-                    c.nullable = false;
-                }
-            }
-        }
         let mut indexes = Vec::new();
+        let mut has_pk_index = false;
         if kind == "table" {
             let mut iq = conn
                 .prepare(&format!("PRAGMA index_list({quoted})"))
@@ -285,12 +310,14 @@ pub fn introspect(conn: &Connection, database: &str) -> Result<SchemaSnapshot, S
                         r.get::<_, String>(1)?,
                         r.get::<_, i64>(2)? != 0,
                         r.get::<_, i64>(4)? != 0,
+                        r.get::<_, String>(3)?,
                     ))
                 })
                 .map_err(|e| e.to_string())?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())?;
-            for (n, unique, partial) in idx {
+            for (n, unique, partial, origin) in idx {
+                has_pk_index |= origin == "pk";
                 let mut c = conn
                     .prepare(&format!("PRAGMA index_info({})", quote_ident("sqlite", &n)))
                     .map_err(|e| e.to_string())?;
@@ -300,45 +327,71 @@ pub fn introspect(conn: &Connection, database: &str) -> Result<SchemaSnapshot, S
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| e.to_string())?
                     .into_iter()
-                    .flatten()
+                    .map(Option::unwrap_or_default)
                     .collect();
                 indexes.push(IndexInfo {
                     name: n,
                     unique,
                     partial,
                     columns: names,
+                    ..Default::default()
                 });
+            }
+        }
+        if kind == "table" && !has_pk_index && columns.iter().filter(|c| c.primary_key).count() == 1
+        {
+            for column in &mut columns {
+                if column.primary_key && column.data_type.eq_ignore_ascii_case("INTEGER") {
+                    column.identity = true;
+                    column.nullable = false;
+                }
             }
         }
         let mut fq = conn
             .prepare(&format!("PRAGMA foreign_key_list({quoted})"))
             .map_err(|e| e.to_string())?;
-        let foreign_keys = fq
+        let mut foreign_key_rows = fq
             .query_map([], |r| {
-                Ok(ForeignKeyInfo {
-                    referenced_table: r.get(2)?,
-                    column: r.get(3)?,
-                    referenced_column: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                })
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    ForeignKeyInfo {
+                        referenced_table: r.get(2)?,
+                        column: r.get(3)?,
+                        referenced_column: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                        on_update: r.get(5)?,
+                        on_delete: r.get(6)?,
+                        ..Default::default()
+                    },
+                ))
             })
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
+        foreign_key_rows.sort_by_key(|(id, position, _)| (*id, *position));
+        let mut foreign_keys = BTreeMap::new();
+        for (id, _, key) in foreign_key_rows {
+            let constraint = foreign_keys.entry(id).or_insert_with(|| key.clone());
+            constraint.columns.push(key.column);
+            constraint.referenced_columns.push(key.referenced_column);
+        }
         tables.push(TableInfo {
             name,
             schema: None,
             kind,
             columns,
             indexes,
-            foreign_keys,
+            foreign_keys: foreign_keys.into_values().collect(),
             row_count: None,
             definition,
+            ..Default::default()
         });
     }
     Ok(SchemaSnapshot {
         database: database.into(),
         engine: "sqlite".into(),
         tables,
+        ..Default::default()
     })
 }
 pub fn apply(

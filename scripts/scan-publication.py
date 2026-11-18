@@ -56,7 +56,7 @@ def add_tree(files: set[Path], folder: str, extensions: set[str]) -> None:
 def inventory() -> tuple[list[Path], list[dict]]:
     files = {ROOT / name for name in ROOT_FILES if (ROOT / name).is_file()}
     add_tree(files, "src", {".ts", ".tsx", ".css", ".json"})
-    add_tree(files, "src-tauri/src", {".rs", ".md", ".sql", ".json"})
+    add_tree(files, "src-tauri/src", {".rs", ".md", ".sql", ".json", ".py", ".mjs"})
     add_tree(files, "src-tauri/tests", {".rs", ".sql", ".json"})
     add_tree(files, "src-tauri/capabilities", {".json", ".toml"})
     add_tree(files, "src-tauri/icons", {".png", ".ico"})

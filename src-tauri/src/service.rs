@@ -1,8 +1,10 @@
 use crate::{
     assistant, codegen,
     database::{Handle, Session},
-    environment, lab,
+    environment, graph_write, lab,
+    local_ai::{ChatScope, LocalAi, LocalAiConfig, Startup},
     models::*,
+    quick_query::QuickQuery,
     sqlite,
     store::{engines, Store},
     tools, workspace_files,
@@ -17,11 +19,15 @@ use std::{
 use tokio::sync::RwLock;
 
 pub struct AppState {
+    local_ai: LocalAi,
+    pub(crate) project_runs: crate::project_agent::ProjectRuns,
     pub root: PathBuf,
     pub store: Store,
     pub sessions: RwLock<HashMap<String, Arc<Session>>>,
+    quick_queries: RwLock<HashMap<String, Arc<QuickQuery>>>,
     pub environments: environment::EnvironmentManager,
     open_file_requests: Mutex<VecDeque<String>>,
+    graph_previews: Mutex<HashMap<String, (String, String, Instant)>>,
 }
 fn arg<'a>(v: &'a Value, k: &str) -> &'a str {
     v.get(k).and_then(Value::as_str).unwrap_or("")
@@ -31,6 +37,29 @@ fn decode<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, String> {
 }
 fn encode(v: impl serde::Serialize) -> Result<Value, String> {
     serde_json::to_value(v).map_err(|e| e.to_string())
+}
+
+fn saved_assistant_config(ai: &Value, timeout_seconds: u64) -> assistant::AiConfig {
+    let provider = match ai["provider"].as_str() {
+        Some("openai-compatible") => assistant::AiProvider::OpenAiCompatible,
+        _ => assistant::AiProvider::Ollama,
+    };
+    assistant::AiConfig {
+        provider,
+        endpoint: ai["baseUrl"]
+            .as_str()
+            .unwrap_or("http://127.0.0.1:11434")
+            .into(),
+        model: ai["model"].as_str().unwrap_or_default().into(),
+        timeout_seconds,
+    }
+}
+fn chat_scope(args: &Value) -> Result<ChatScope, String> {
+    match arg(args, "scope") {
+        "" | "work" => Ok(ChatScope::Work),
+        "quick" => Ok(ChatScope::Quick),
+        _ => Err("Area della conversazione sconosciuta.".into()),
+    }
 }
 fn secret_entry(id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new("DatabaseManager", id).map_err(|e| e.to_string())
@@ -130,13 +159,18 @@ impl AppState {
     pub fn new(root: PathBuf) -> Result<Self, String> {
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let store = Store::new(&root.join("workspace.sqlite"))?;
+        let local_ai = LocalAi::new(&root);
         let environments = environment::EnvironmentManager::new(root.clone())?;
         Ok(Self {
+            project_runs: Default::default(),
             root,
+            local_ai,
             store,
             sessions: RwLock::new(HashMap::new()),
+            quick_queries: RwLock::new(HashMap::new()),
             environments,
             open_file_requests: Mutex::new(VecDeque::new()),
+            graph_previews: Mutex::new(HashMap::new()),
         })
     }
     pub async fn session(&self, id: &str) -> Result<Arc<Session>, String> {
@@ -153,6 +187,9 @@ impl AppState {
         profile: ConnectionProfile,
         secret: String,
     ) -> Result<SchemaSnapshot, String> {
+        if id.starts_with("quick-") {
+            return Err("Identificatore riservato alla simulazione.".into());
+        }
         let s = Arc::new(Session::open(profile, secret).await?);
         let schema = s.introspect().await?;
         if s.profile.engine == "sqlite" && s.profile.id.len() > 0 {
@@ -163,6 +200,12 @@ impl AppState {
     }
     pub async fn call(&self, command: &str, args: Value) -> Result<Value, String> {
         match command {
+            "inspect_project_sources" => {
+                let directory=arg(&args,"directory").to_owned();
+                tokio::task::spawn_blocking(move || crate::project_sync::inspect(&directory)).await.map_err(|e|e.to_string())?
+            }
+            "project_ai_plan" => crate::project_agent::plan(self, &args).await,
+            "project_ai_cancel" | "cancel_project_test" => { self.project_runs.cancel(arg(&args,"requestId"))?; Ok(json!(true)) }
             "inspect_workspace_file" => {
                 let request: workspace_files::InspectFileRequest = decode(args)?;
                 let file =
@@ -182,11 +225,12 @@ impl AppState {
             }
             "list_workspace_directory" => {
                 let path = arg(&args, "path").to_owned();
+                let root = args.get("root").and_then(Value::as_str).map(str::to_owned);
                 let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0);
                 let offset = usize::try_from(offset).map_err(|_| "Offset cartella non valido")?;
                 encode(
                     tokio::task::spawn_blocking(move || {
-                        workspace_files::list_directory(&path, offset)
+                        workspace_files::list_directory_within(&path, offset, root.as_deref())
                     })
                     .await
                     .map_err(|e| e.to_string())??,
@@ -225,6 +269,44 @@ impl AppState {
                 encode(queue.drain(..).collect::<Vec<_>>())
             }
             "open_existing_sqlite" => self.open_existing_sqlite(&args).await,
+            "create_workspace_sqlite" => {
+                let path = arg(&args, "path").trim().to_owned();
+                tokio::task::spawn_blocking(move || sqlite::create_file(&path))
+                    .await.map_err(|e| e.to_string())??;
+                self.open_existing_sqlite(&json!({"path":args["path"].as_str().unwrap_or_default().trim(),"readOnly":false})).await
+            }
+            "create_server_database" => {
+                let session = self.session(arg(&args, "sessionId")).await?;
+                let name = arg(&args, "name").trim();
+                let collection = arg(&args, "collection").trim();
+                if name.is_empty() || name.chars().any(char::is_control) || name.len() > 63 {
+                    return Err("Specifica un nome valido, entro 63 byte.".into());
+                }
+                if session.profile.read_only || session.profile.laboratory {
+                    return Err("Scegli una connessione server modificabile per creare un database.".into());
+                }
+                let _lock = session.serial.lock().await;
+                match &session.handle {
+                    Handle::Postgres {client, ..} => client.batch_execute(&format!("CREATE DATABASE {}", quote_ident("postgresql", name))).await.map_err(|e| format!("Creazione PostgreSQL: {}", e.as_db_error().map(|e| e.message()).unwrap_or("errore di connessione")))?,
+                    Handle::Mysql {conn, ..} => {
+                        use mysql_async::prelude::Queryable;
+                        let mut conn = conn.lock().await;
+                        let active: Option<u8> = conn.query_first("SELECT @@in_transaction").await.map_err(|e| e.to_string())?;
+                        if active != Some(0) {
+                            return Err("Termina la transazione corrente prima di creare un database.".into());
+                        }
+                        conn.query_drop(format!("CREATE DATABASE {}", quote_ident(&session.profile.engine, name))).await.map_err(|e| e.to_string())?;
+                    }
+                    Handle::Mongo {db} => {
+                        if name.contains([' ', '/', '\\', '.', '"', '$', '*', '<', '>', ':', '|', '?']) || collection.is_empty() || collection.len() > 120 || collection.chars().any(char::is_control) || collection.starts_with("system.") || collection.contains('$') {
+                            return Err("Indica un database MongoDB e un nome valido per la prima collezione.".into());
+                        }
+                        db.client().database(name).create_collection(collection).await.map_err(|e| e.to_string())?;
+                    }
+                    _ => return Err("Usa Crea file SQLite per questo motore.".into()),
+                }
+                Ok(json!({"database":name}))
+            }
             "bootstrap" => Ok(
                 json!({"profiles":self.store.profiles()?,"savedQueries":self.store.saved()?,"history":self.store.history()?,"settings":self.store.settings()?,"engines":engines()}),
             ),
@@ -266,8 +348,9 @@ impl AppState {
                 Ok(json!(true))
             }
             "test_connection" => {
-                let p: ConnectionProfile =
+                let mut p: ConnectionProfile =
                     decode(args.get("profile").cloned().ok_or("Profilo mancante")?)?;
+                p.create_if_missing = false;
                 let secret = args
                     .get("password")
                     .and_then(Value::as_str)
@@ -336,16 +419,12 @@ impl AppState {
             ),
             "read_table" => {
                 let s = self.session(arg(&args, "sessionId")).await?;
-                let table = arg(&args, "table");
+                let table: TableRef = decode(args["table"].clone())?;
                 let schema = s.introspect().await?;
-                let metadata = schema
-                    .tables
-                    .iter()
-                    .find(|t| {
-                        t.name == table
-                            || format!("{}.{}", t.schema.as_deref().unwrap_or(""), t.name) == table
-                    })
-                    .ok_or("Oggetto non trovato")?;
+                let metadata = table.resolve(&schema)?;
+                if !matches!(metadata.kind.as_str(), "view" | "table" | "collection" | "timeseries") {
+                    return Err("L’oggetto non contiene dati consultabili.".into());
+                }
                 let limit = args["limit"].as_u64().unwrap_or(200).clamp(1, 1000);
                 let offset = args["offset"].as_u64().unwrap_or(0);
                 let mut out = if s.profile.engine == "mongodb" {
@@ -355,7 +434,14 @@ impl AppState {
                         serde_json::from_str::<Value>(arg(&args, "filter"))
                             .map_err(|e| e.to_string())?
                     };
-                    s.execute(&json!({"find":metadata.name,"filter":filter,"limit":limit as i64,"skip":offset as i64,"batchSize":limit as i64,"maxTimeMS":30000}).to_string(),BTreeMap::new()).await?
+                    let order = arg(&args, "orderBy");
+                    if !order.is_empty() && !metadata.columns.iter().any(|c| c.name == order) {
+                        return Err("Colonna ordinamento sconosciuta".into());
+                    }
+                    let mut request = json!({"find":metadata.name,"filter":filter,"limit":limit,"skip":offset,"batchSize":limit,"maxTimeMS":30000});
+                    let direction = if args["orderDesc"].as_bool().unwrap_or(false) { -1 } else { 1 };
+                    request["sort"] = if order.is_empty() { json!({"_id": 1}) } else { json!({(order): direction}) };
+                    s.execute(&request.to_string(),BTreeMap::new()).await?
                 } else {
                     let q = |n: &str| quote_ident(&s.profile.engine, n);
                     let qualified = metadata
@@ -427,7 +513,10 @@ impl AppState {
                     s.execute(&query, parameters).await?
                 };
                 for set in &mut out.sets {
-                    set.table = Some(table.into());
+                    set.table = Some(match &metadata.schema {
+                        Some(schema) => format!("{schema}.{}", metadata.name),
+                        None => metadata.name.clone(),
+                    });
                     if s.profile.engine != "mongodb" {
                         set.columns = metadata.columns.clone()
                     }
@@ -437,12 +526,51 @@ impl AppState {
             "apply_changes" => {
                 let s = self.session(arg(&args, "sessionId")).await?;
                 encode(
-                    s.apply(
-                        arg(&args, "table"),
+                    s.apply_ref(
+                        decode(args["table"].clone())?,
                         decode(args.get("changes").cloned().unwrap_or(json!([])))?,
                     )
                     .await?,
                 )
+            }
+            "preview_graph_write" | "execute_graph_write" => {
+                self.graph_write(&args, command == "execute_graph_write").await
+            }
+            "compile_project_write" => {
+                let schema: SchemaSnapshot = decode(args["schema"].clone())?;
+                let operation: graph_write::Operation = decode(args["operation"].clone())?;
+                let compiled = operation.compile(&schema)?;
+                Ok(json!({"query":compiled.query,"parameters":compiled.parameters}))
+            }
+            "test_project_remote" => crate::project_test::test_remote(self, args).await,
+            "preview_app_integration" | "apply_app_integration" | "rollback_app_integration" |
+            "recover_app_integration" | "diff_app_integration" => {
+                let operation = command.to_owned();
+                tokio::task::spawn_blocking(move || crate::app_integration::command(&operation, args))
+                    .await.map_err(|error| error.to_string())?
+            }
+            "quick_query_open" => self.quick_query_open(&args).await,
+            "quick_query_schema" => encode(self.quick_query(arg(&args, "sessionId")).await?.schema().await?),
+            "quick_query_execute" => {
+                let session = self.quick_query(arg(&args, "sessionId")).await?;
+                let parameters = args.get("parameters").cloned().map(decode).transpose()?.unwrap_or_default();
+                encode(session.execute(arg(&args, "query").into(), parameters).await?)
+            }
+            "quick_query_reset" => {
+                let session = self.quick_query(arg(&args, "sessionId")).await?;
+                let schema = session.clone().reset().await?;
+                encode(session.opened(schema))
+            }
+            "quick_query_cancel" => {
+                self.quick_query(arg(&args, "sessionId")).await?.cancel()?;
+                Ok(json!("Interruzione richiesta alla simulazione"))
+            }
+            "quick_query_close" => {
+                let session = self.quick_queries.write().await.remove(arg(&args, "sessionId"));
+                if let Some(session) = session {
+                    session.cancel()?;
+                }
+                Ok(json!(true))
             }
             "lab_open" => self.lab_open(&args).await,
             "lab_reset" => self.lab_reset(&args).await,
@@ -461,6 +589,18 @@ impl AppState {
             "generate_workbench" => encode(crate::codegen_workbench::generate_workbench(decode(
                 args.get("request").cloned().ok_or("Richiesta mancante")?,
             )?)?),
+            "generate_application_package" => {
+                let request = decode(args.get("request").cloned().ok_or("Progetto mancante")?)?;
+                encode(tokio::task::spawn_blocking(move || crate::project_files::generate(request))
+                    .await.map_err(|e| e.to_string())??)
+            }
+            "export_application_package" => {
+                let project = decode(args.get("package").cloned().ok_or("Pacchetto mancante")?)?;
+                let parent = PathBuf::from(arg(&args, "destination"));
+                let destination = tokio::task::spawn_blocking(move || crate::project_files::export(project, &parent))
+                    .await.map_err(|e| e.to_string())??;
+                encode(destination.to_string_lossy().to_string())
+            }
             "generate_code" => encode(codegen::generate_project(decode(
                 args.get("request").cloned().ok_or("Richiesta mancante")?,
             )?)?),
@@ -522,9 +662,126 @@ impl AppState {
                     .retain(|_, s| s.profile.id != id);
                 encode(outcome)
             }
+            "local_ai_config" => {
+                if let Some(patch) = args.get("config") {
+                    let next: LocalAiConfig = decode(patch.clone())?;
+                    next.validate()?;
+                    let prior = self.local_ai_config()?;
+                    if prior.endpoint != next.endpoint && self.local_ai.daemon.is_managed().await {
+                        return Err("Spegni l’istanza Ollama aperta prima di modificare il suo indirizzo.".into());
+                    }
+                    if !next.model.is_empty() && (prior.model != next.model || prior.endpoint != next.endpoint) {
+                        assistant::verify_local_ollama(&next.assistant(8)).await?;
+                    }
+                    self.store.update_settings(json!({"localOllama":next}))?;
+                    return encode(next);
+                }
+                encode(self.local_ai_config()?)
+            }
+            "local_ai_status" => {
+                let config = self.local_ai_config()?;
+                let state = self.local_ai.daemon.status(&config.assistant(5)).await;
+                let model_error = if state.online && !config.model.is_empty() {
+                    assistant::verify_local_ollama(&config.assistant(5)).await.err()
+                } else { None };
+                let mut details = encode(state)?;
+                details["modelError"] = encode(model_error)?;
+                Ok(json!({"config":config,"state":details}))
+            }
+            "local_ai_start" => {
+                let config = self.local_ai_config()?;
+                let automatic = args["automatic"].as_bool() == Some(true);
+                if automatic && config.startup != Some(Startup::Automatic) {
+                    return Ok(json!({"accepted":false,"state":null}));
+                }
+                let request = arg(&args, "requestId");
+                let request = if request.is_empty() { uuid::Uuid::new_v4().to_string() } else {
+                    uuid::Uuid::parse_str(request).map_err(|_| "Identificatore di avvio Ollama non valido.")?;
+                    request.to_owned()
+                };
+                encode(self.local_ai.daemon.start(
+                    &config.assistant(5), &request,
+                    || !automatic || self.local_ai.auto_allowed(),
+                    || { if !automatic { self.local_ai.pause_auto(false); } },
+                ).await?)
+            }
+            "local_ai_stop" => {
+                let config = self.local_ai_config()?;
+                if let Some(request) = args["cancelStart"].as_str() {
+                    uuid::Uuid::parse_str(request).map_err(|_| "Identificatore di avvio Ollama non valido.")?;
+                    self.local_ai.daemon.cancel_start(request, || {
+                        self.local_ai.pause_auto(true);
+                        self.local_ai.cancel_all();
+                    }).await?;
+                    return Ok(json!(true));
+                }
+                self.local_ai.daemon.stop(
+                    &config.assistant(5), arg(&args, "fingerprint"),
+                    args["confirmed"].as_bool() == Some(true),
+                    || {
+                        self.local_ai.pause_auto(true);
+                        self.local_ai.cancel_all();
+                    },
+                ).await?;
+                Ok(json!(true))
+            }
+            "local_ai_models" => {
+                let mut config = self.local_ai_config()?;
+                if let Some(endpoint) = args["endpoint"].as_str() {
+                    config.endpoint = endpoint.to_owned();
+                    config.validate()?;
+                }
+                encode(assistant::list_chat_models(&config.assistant(8)).await?)
+            }
+            "local_ai_conversations" => encode(self.local_ai.list_chats(chat_scope(&args)?)?),
+            "local_ai_conversation" => encode(self.local_ai.get_chat(arg(&args, "id"), chat_scope(&args)?)?),
+            "local_ai_rename_conversation" => {
+                self.local_ai.rename_chat(arg(&args, "id"), chat_scope(&args)?, arg(&args, "name"))?;
+                Ok(json!(true))
+            }
+            "local_ai_delete_conversation" => {
+                self.local_ai.delete_chat(arg(&args, "id"), chat_scope(&args)?)?;
+                Ok(json!(true))
+            }
+            "local_ai_chat_start" => self.local_ai_chat_start(&args).await,
+            "local_ai_chat_poll" => encode(self.local_ai.progress(arg(&args, "requestId"))?),
+            "local_ai_chat_cancel" => {
+                self.local_ai.cancel(arg(&args, "requestId"))?;
+                Ok(json!(true))
+            }
             "assistant_chat" => {
                 self.assistant_chat(args.get("request").unwrap_or(&args))
                     .await
+            }
+            "assistant_completion" => {
+                let request = args.get("request").unwrap_or(&args);
+                let settings = self.store.settings()?;
+                let legacy = &settings["ai"];
+                let local = LocalAiConfig::from_settings(&settings)?;
+                let has_local = settings.get("localOllama").is_some();
+                let config = if has_local { local.assistant(30) } else { saved_assistant_config(legacy, 30) };
+                let mode = if has_local { local.completion_mode.as_str() } else { legacy["completionMode"].as_str().unwrap_or_default() };
+                let trigger = arg(request, "trigger");
+                if config.provider != assistant::AiProvider::Ollama
+                    || (trigger != "manual" && trigger != "automatic")
+                    || (mode != "automatic" && !(mode == "manual" && trigger == "manual"))
+                    || arg(request, "model") != config.model
+                    || arg(request, "endpoint") != config.endpoint
+                {
+                    return Err("I suggerimenti Ollama non sono abilitati per questa configurazione.".into());
+                }
+                let engine = if arg(request, "quickSessionId").is_empty() {
+                    arg(request, "engine")
+                } else {
+                    self.quick_query(arg(request, "quickSessionId")).await?;
+                    "sqlite"
+                };
+                let mut cancel = self.local_ai_cancel_signal();
+                let result = tokio::select! {
+                    _ = cancel.changed() => return Err("Suggerimento Ollama interrotto.".into()),
+                    reply = assistant::complete_editor(config, engine, arg(request, "prefix"), arg(request, "suffix")) => reply?,
+                };
+                encode(result)
             }
             "assistant_models" => {
                 let config: assistant::AiConfig = decode(
@@ -642,6 +899,61 @@ impl AppState {
             .await
             .insert(session_id.clone(), session);
         Ok(json!({"profile":profile,"sessionId":session_id,"schema":schema}))
+    }
+    async fn graph_write(&self, args: &Value, execute: bool) -> Result<Value, String> {
+        let session_id = arg(args, "sessionId");
+        let session = self.session(session_id).await?;
+        if session.profile.read_only {
+            return Err("Connessione in sola lettura.".into());
+        }
+        if args["operation"].to_string().len() > 1024 * 1024 {
+            return Err("Valori della scrittura grafica superiori a 1 MiB.".into());
+        }
+        let operation: graph_write::Operation = decode(args["operation"].clone())?;
+        let _guard = session.serial.lock().await;
+        let compiled = operation.compile(&session.introspect_unlocked().await?)?;
+        if execute {
+            let preview = self.graph_previews.lock().map_err(|e| e.to_string())?.remove(arg(args, "fingerprint"));
+            if !preview.is_some_and(|(id, digest, issued)| id == session_id && digest == compiled.digest && issued.elapsed().as_secs() < 300) {
+                return Err("L’anteprima è scaduta o la destinazione è cambiata. Rivedi l’operazione.".into());
+            }
+            return encode(session.execute_unlocked(&compiled.query, compiled.parameters).await?);
+        }
+        let fingerprint = uuid::Uuid::new_v4().to_string();
+        let mut previews = self.graph_previews.lock().map_err(|e| e.to_string())?;
+        previews.retain(|_, (_, _, issued)| issued.elapsed().as_secs() < 300);
+        if previews.len() >= 64 {
+            if let Some(oldest) = previews.iter().min_by_key(|(_, (_, _, issued))| *issued).map(|(token, _)| token.clone()) {
+                previews.remove(&oldest);
+            }
+        }
+        previews.insert(fingerprint.clone(), (session_id.into(), compiled.digest, Instant::now()));
+        Ok(json!({"query":compiled.query,"parameters":compiled.parameters,"fingerprint":fingerprint}))
+    }
+    async fn quick_query(&self, id: &str) -> Result<Arc<QuickQuery>, String> {
+        self.quick_queries.read().await.get(id).cloned().ok_or_else(|| "Apri la simulazione Query rapide per iniziare.".into())
+    }
+    async fn quick_query_open(&self, args: &Value) -> Result<Value, String> {
+        if !matches!(arg(args, "engine"), "" | "sqlite") {
+            return Err("Query rapide simula SQLite in memoria. Le altre connessioni restano disponibili nell’editor normale e nei laboratori dedicati.".into());
+        }
+        let source = match arg(args, "sourceSessionId") {
+            "" => None,
+            id => Some(self.session(id).await?),
+        };
+        let dataset = match arg(args, "dataset") {
+            "" => "shop",
+            dataset => dataset,
+        };
+        let session = QuickQuery::open(dataset.to_owned(), source).await?;
+        let schema = session.clone().schema().await?;
+        let opened = encode(session.opened(schema))?;
+        let mut sessions = self.quick_queries.write().await;
+        if sessions.len() >= 4 {
+            return Err("Chiudi una delle simulazioni prima di aprirne un’altra.".into());
+        }
+        sessions.insert(session.profile.id.clone(), session);
+        Ok(opened)
     }
     async fn lab_open(&self, args: &Value) -> Result<Value, String> {
         let engine = if arg(args, "engine").is_empty() {
@@ -1005,15 +1317,80 @@ impl AppState {
             _ => Err("Azione ambiente sconosciuta".into()),
         }
     }
+    fn local_ai_config(&self) -> Result<LocalAiConfig, String> {
+        LocalAiConfig::from_settings(&self.store.settings()?)
+    }
+    pub(crate) fn local_ai_cancel_signal(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.local_ai.cancellation_signal()
+    }
+    pub(crate) async fn managed_ollama_config(&self) -> Result<assistant::AiConfig, String> {
+        let config = self.local_ai_config()?;
+        if config.model.trim().is_empty() {
+            return Err("Scegli un modello nella configurazione Ollama.".into());
+        }
+        let prepared = config.assistant(120);
+        if config.startup == Some(Startup::Automatic) && self.local_ai.auto_allowed() {
+            let mut cancelled = self.local_ai_cancel_signal();
+            let request = uuid::Uuid::new_v4().to_string();
+            let launch = self.local_ai.daemon.start(
+                &prepared, &request, || self.local_ai.auto_allowed(), || {},
+            ).await?;
+            if !launch.accepted {
+                return Err("Avvio Ollama interrotto.".into());
+            }
+            if launch.state.is_some() {
+                tokio::select! {
+                    biased;
+                    _ = cancelled.changed() => return Err("Avvio Ollama interrotto.".into()),
+                    result = self.local_ai.daemon.wait_ready(&prepared) => result?,
+                }
+            }
+        }
+        Ok(prepared)
+    }
+    async fn local_ai_chat_start(&self, args: &Value) -> Result<Value, String> {
+        let cancel = self.local_ai_cancel_signal();
+        let config = self.managed_ollama_config().await?;
+        let scope = chat_scope(args)?;
+        let context = &args["context"];
+        let include_query = context["includeQuery"].as_bool() == Some(true);
+        let include_rows = context["includeRows"].as_bool() == Some(true);
+        let include_schema = context["includeSchema"].as_bool() == Some(true);
+        let schema = if include_schema {
+            match scope {
+                ChatScope::Work => Some(encode(self.session(arg(context, "sessionId")).await?.introspect().await?)?),
+                ChatScope::Quick => Some(encode(self.quick_query(arg(context, "quickSessionId")).await?.schema().await?)?),
+            }
+        } else { None };
+        let engine = match (scope, arg(context, "engine")) {
+            (ChatScope::Quick, _) => Some("sqlite".into()),
+            (_, "sqlite" | "postgresql" | "mysql" | "mariadb" | "mongodb") => Some(arg(context, "engine").into()),
+            _ => None,
+        };
+        let request = assistant::AiRequest {
+            config,
+            prompt: arg(args, "message").to_owned(),
+            engine,
+            history: Vec::new(),
+            consent: assistant::ContextConsent { include_query, include_rows, include_schema },
+            query: include_query.then(|| arg(context, "query").to_owned()),
+            schema,
+            rows: include_rows.then(|| context["rows"].clone()),
+        };
+        encode(self.local_ai.submit(arg(args, "requestId").to_owned(), arg(args, "conversationId"), scope, request, cancel)?)
+    }
     async fn assistant_chat(&self, r: &Value) -> Result<Value, String> {
         let settings = self.store.settings()?;
-        let ai = &settings["ai"];
-        let provider = if arg(r, "provider") == "ollama" {
-            assistant::AiProvider::Ollama
+        let config = saved_assistant_config(&settings["ai"], 120);
+        let quick_session = if arg(r, "quickSessionId").is_empty() {
+            None
         } else {
-            assistant::AiProvider::OpenAiCompatible
+            if config.provider != assistant::AiProvider::Ollama {
+                return Err("Nella simulazione Query rapide l’assistente usa solo Ollama locale.".into());
+            }
+            Some(self.quick_query(arg(r, "quickSessionId")).await?)
         };
-        let s = if arg(r, "sessionId").is_empty() {
+        let s = if quick_session.is_some() || arg(r, "sessionId").is_empty() {
             None
         } else {
             Some(self.session(arg(r, "sessionId")).await?)
@@ -1021,7 +1398,9 @@ impl AppState {
         let include_schema = r["includeSchema"].as_bool().unwrap_or(false);
         let include_rows = r["includeRows"].as_bool().unwrap_or(false);
         let schema = if include_schema {
-            if let Some(s) = &s {
+            if let Some(quick) = &quick_session {
+                Some(encode(quick.clone().schema().await?)?)
+            } else if let Some(s) = &s {
                 Some(encode(s.introspect().await?)?)
             } else {
                 None
@@ -1029,23 +1408,28 @@ impl AppState {
         } else {
             None
         };
-        let config = assistant::AiConfig {
-            provider,
-            endpoint: ai["baseUrl"]
-                .as_str()
-                .unwrap_or("http://127.0.0.1:11434")
-                .into(),
-            model: if arg(r, "model").is_empty() {
-                ai["model"].as_str().unwrap_or("").into()
-            } else {
-                arg(r, "model").into()
-            },
-            timeout_seconds: 120,
-        };
+        if r.get("model").is_some() && arg(r, "model") != config.model
+            || r.get("endpoint").is_some() && arg(r, "endpoint") != config.endpoint
+            || r.get("provider").is_some() && arg(r, "provider") != match config.provider {
+                assistant::AiProvider::Ollama => "ollama",
+                assistant::AiProvider::OpenAiCompatible => "openai-compatible",
+            }
+        {
+            return Err("La configurazione dell’assistente è cambiata. Riprova con il modello corrente.".into());
+        }
+        let engine = if quick_session.is_some() {
+            Some("sqlite".to_owned())
+        } else { match arg(r, "engine") {
+            current @ ("sqlite" | "postgresql" | "mysql" | "mariadb" | "mongodb") => {
+                Some(current.to_owned())
+            }
+            _ => s.as_ref().map(|s| s.profile.engine.clone()),
+        }};
         let request = assistant::AiRequest {
             config,
             prompt: arg(r, "message").into(),
-            engine: s.as_ref().map(|s| s.profile.engine.clone()),
+            engine,
+            history: r.get("history").cloned().map(decode).transpose()?.unwrap_or_default(),
             consent: assistant::ContextConsent {
                 include_query: r
                     .get("includeQuery")
@@ -1062,12 +1446,20 @@ impl AppState {
                 None
             },
         };
-        let key = password("ai-cloud-api-key");
-        encode(
-            assistant::complete(request, if key.is_empty() { None } else { Some(key) })
-                .await?
-                .content,
-        )
+        let key = if request.config.provider == assistant::AiProvider::OpenAiCompatible {
+            Some(password("ai-cloud-api-key"))
+        } else {
+            None
+        };
+        if request.config.provider == assistant::AiProvider::Ollama {
+            let mut cancel = self.local_ai_cancel_signal();
+            tokio::select! {
+                _ = cancel.changed() => Err("Risposta Ollama interrotta.".into()),
+                reply = assistant::complete(request, key) => encode(reply?.content),
+            }
+        } else {
+            encode(assistant::complete(request, key).await?.content)
+        }
     }
     async fn transfer_data(&self, r: &Value) -> Result<Value, String> {
         let s = self.session(arg(r, "sessionId")).await?;

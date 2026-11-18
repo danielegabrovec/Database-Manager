@@ -88,7 +88,7 @@
   height: 16px;
 }
 .designer-sql {
-  height: 330px;
+  height: clamp(170px, 27vh, 300px);
   border: 1px solid var(--border);
   border-radius: 7px;
   overflow: hidden;
@@ -111,6 +111,11 @@
 .design-graph-table.origin {
   border-color: var(--accent);
 }
+.design-graph-table .design-graph-kind {
+  display: block;
+  padding: 0 13px 9px;
+  background: var(--surface-2);
+}
 .design-graph-table strong {
   display: block;
   padding: 13px;
@@ -124,8 +129,22 @@
   border-top: 1px solid var(--border);
   position: relative;
 }
+.design-graph-table > div > span,
+.design-graph-table > div > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .design-graph-table small {
   color: var(--muted);
+}
+.designer-import-preview {
+  max-height: 250px;
+  overflow: auto;
+}
+.designer-import-preview ul {
+  margin: 0;
+  padding-inline-start: 23px;
 }
 .designer-workbench .codegen-layout {
   grid-template-columns: 280px minmax(0, 1fr);

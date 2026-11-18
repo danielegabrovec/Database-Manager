@@ -6,6 +6,7 @@ export interface QueryDocument {
   content: string;
   baseline: string;
   kind: "sql" | "mongodb";
+  dialect?: Engine;
   path?: string;
   sourcePath?: string;
   sourceLine?: number;
@@ -29,7 +30,7 @@ export const MAX_QUERY_DOCUMENTS = 24;
 export const MAX_QUERY_WORKSPACE_CHARACTERS = 8 * 1024 * 1024;
 export function createQueryDocument(
   content = "",
-  engine: Engine = "sqlite",
+  engine?: Engine,
   title = "Query senza titolo",
 ): QueryDocument {
   return {
@@ -38,6 +39,7 @@ export function createQueryDocument(
     content,
     baseline: "",
     kind: engine === "mongodb" ? "mongodb" : "sql",
+    ...(engine ? { dialect: engine } : {}),
     parametersText: "{}",
     executionMode: "current",
     savedParametersText: "{}",
@@ -84,6 +86,14 @@ export function restoreQueryWorkspace(value: unknown): QueryWorkspace | null {
       content: raw.content,
       baseline: raw.baseline,
       kind: raw.kind,
+      dialect:
+        raw.dialect &&
+        ["sqlite", "postgresql", "mysql", "mariadb", "mongodb"].includes(
+          raw.dialect,
+        ) &&
+        (raw.dialect === "mongodb") === (raw.kind === "mongodb")
+          ? raw.dialect
+          : undefined,
       path: optional("path"),
       originLabel: optional("originLabel", 256),
       originView: raw.originView === "library" ? "library" : undefined,

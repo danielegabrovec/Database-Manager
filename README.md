@@ -4,11 +4,13 @@ Applicazione desktop in italiano per **SQLite, PostgreSQL, MySQL, MariaDB e Mong
 
 Apri database e file già esistenti, prepara le query, modifica i dati con anteprima e genera codice per dodici linguaggi. I cataloghi separano esempi SQL/MongoDB e script PowerShell da leggere e personalizzare. Le funzioni principali e la guida didattica funzionano senza AI.
 
-**Autore: Daniele Gabrovec** · **Versione 0.5.1** · **Distribuzione: Windows x64**
+Nella versione 0.6.0, **Home** riunisce apertura, ripresa e creazione guidata. File e connessioni sono nella barra sinistra, le schede di lavoro al centro e l’assistente Ollama a destra. Il **Grafo operazioni** permette di leggere e scrivere con nodi collegati. **Query rapide** esegue script in una simulazione SQLite isolata. La [guida al workbench grafico](docs/WORKBENCH-GRAFICO.md) descrive i flussi, la copertura per motore e i limiti di conversione.
+
+**Autore: Daniele Gabrovec** · **Versione 0.6.0** · **Distribuzione: Windows x64**
 
 [**Scarica l'ultima release Windows**](https://github.com/danielegabrovec/Database-Manager/releases/latest) · [Guida utente](docs/GUIDA-UTENTE.md) · [Sviluppo](docs/SVILUPPO.md) · [Licenza](LICENSE)
 
-La 0.5.1 completa apertura file e cataloghi, aggiunge piani di modifica dei database esistenti, guida PowerShell passo passo e funzioni di creazione dello schema nei dodici linguaggi. [Novità e limiti](docs/VERSIONE-0.5.md). La [patch 0.5.1](docs/VERSIONE-0.5.1.md) include la correzione di codifica verificata nella finestra Windows reale.
+**Progetto applicativo** riunisce più database, schemi, grafi e dati iniziali. La Home e l’assistente con Ollama accompagnano la progettazione, la prova isolata e il passaggio al codice. [Guida 0.6.0](docs/WORKBENCH-0.6.0.md) · [Rapporto di collaudo](docs/REPORT-0.6.0.md).
 
 ## Inizia in pochi minuti
 
@@ -107,16 +109,16 @@ Le schermate seguenti mostrano gli altri strumenti della revisione 0.2 su dati s
 
 ## Verifiche e limiti attuali
 
-La suite corrente passa **306 test frontend**. Le prove dedicate della 0.5 verificano migrazioni e contratto degli adattatori su **PostgreSQL, MySQL, MariaDB e MongoDB reali**, oltre a SQLite. Le nuove funzioni di creazione schema sono state generate per 48 combinazioni SQL e compilate/eseguite su SQLite nei **12 linguaggi**, senza modificare i sorgenti generati.
+La release 0.5.1 ha superato **306 test frontend**. Per il workbench grafico e Query rapide, il [rapporto del ramo di sviluppo](docs/REPORT-WORKBENCH-20261117.md) riporta **337 test frontend**, **110 test Rust**, prove native, verifiche sui cinque motori e risultati dei generatori.
 
 I parser reali di **Windows PowerShell 5.1 e PowerShell 7** verificano **57 script ciascuno**: 52 modelli iniziali e 5 casi con valori particolari, 114 analisi sintattiche. La sintassi non certifica l’esecuzione di tutti i comandi sui server.
 
 Esiti della suite Rust, prove visive, installer e ambito della pubblicazione sono nel [report completo della 0.5](docs/REPORT-0.5.1-20261110.md). Le verifiche delle versioni precedenti restano nei rispettivi documenti.
 
 - L'installer non è firmato digitalmente. La distribuzione qui documentata è **Windows x64**.
-- Il piano grafico supporta modifiche dichiarate e blocca ricostruzioni che perderebbero metadati. Migrazioni complesse, PK/identità e alcuni vincoli richiedono SQL dedicato. Per PostgreSQL opera nello schema **public**.
+- Il piano grafico supporta modifiche dichiarate e blocca ricostruzioni che perderebbero metadati. La release 0.5.1 opera nello schema PostgreSQL `public`. La 0.6.0 aggiunge gli schemi qualificati e conserva il riferimento tra schemi.
 - Le FK singole richiedono una destinazione PK/UNIQUE singola e completa. FK composte e indici parziali non vengono adottati dal designer fingendo di conservarli. Il generatore conserva il supporto alle PK composte.
-- I repository di lettura restano distinti dalle funzioni/programmi CRUD. Le nuove funzioni di creazione schema riguardano i quattro motori SQL; per MongoDB si esporta lo schema JSON. Tipi non mappabili vengono segnalati.
+- Le funzioni di creazione schema coprono i quattro motori SQL nei dodici linguaggi. Nella 0.6.0 MongoDB esporta anche funzioni di schema per Rust, Python, JavaScript e TypeScript. Per i tipi non mappabili il generatore indica il motivo.
 - Anteprima testuale fino a 8 MiB; analisi sorgente del centro file fino a un milione di caratteri e 200 istruzioni, dichiarando le parti non analizzate. L'estrazione statica non ricostruisce ogni ORM o valore runtime.
 - Server esterni, configurazioni TLS/SSH e installazione dei servizi Windows richiedono verifiche dedicate. I servizi SCM in VM pulita non sono certificati.
 
@@ -129,7 +131,7 @@ L'assistente facoltativo supporta Ollama o un endpoint HTTPS compatibile. Prima 
 | [Guida utente](docs/GUIDA-UTENTE.md)                   | Installazione, dati, editor, designer, codice e flussi quotidiani. |
 | [Guida PowerShell e query](docs/GUIDA-OPERATIVA-POWERSHELL-QUERY.md) | 50 passi, 77 esempi, creazione, apertura, modifica, backup e integrazione. |
 | [Novità 0.5](docs/VERSIONE-0.5.md) | Migrazioni, recupero bozze, codice schema e limiti espliciti. |
-| [Report finale 0.5.1](docs/REPORT-0.5.1-20261110.md) | Test correnti, prove visive native, installer e distribuzione. |
+| [Report finale 0.5.1](docs/REPORT-0.5.1-20261110.md) | Archivio dei test e della distribuzione 0.5.1. |
 | [Sviluppo](docs/SVILUPPO.md)                           | Toolchain, avvio locale, test e build Windows.                     |
 | [Novità e verifiche 0.4](docs/VERSIONE-0.4.md)         | Navigazione, cataloghi, PowerShell e ambito delle prove correnti.  |
 | [Novità e verifiche 0.3](docs/VERSIONE-0.3.md)         | Prove storiche: apertura file, schede, codifiche e salvataggi.     |

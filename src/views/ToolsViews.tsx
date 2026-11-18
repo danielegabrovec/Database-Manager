@@ -32,6 +32,12 @@ import {
 } from "../components/UI";
 import { PathInput } from "../components/PathInput";
 import { useConfirmation } from "../components/ConfirmationProvider";
+import {
+  assistantHistory,
+  assistantQueryBlocks,
+  readAssistantSettings,
+} from "../editor/assistantContext";
+import type { AssistantTurn, CompletionMode } from "../editor/assistantContext";
 const AboutPanel = lazy(() =>
   import("../components/AboutPanel").then((module) => ({
     default: module.AboutPanel,
@@ -753,26 +759,55 @@ export function SettingsView({
   settings: Record<string, unknown>;
   onSave: (patch: Record<string, unknown>) => Promise<void>;
 }) {
-  const existing = (
-    settings.ai && typeof settings.ai === "object" ? settings.ai : {}
-  ) as Record<string, unknown>;
-  const [provider, setProvider] = useState(
-    String(existing.provider || "ollama"),
+  const existing = readAssistantSettings(settings);
+  const [provider, setProvider] = useState<string>(existing.provider);
+  const [url, setUrl] = useState(existing.endpoint);
+  const [model, setModel] = useState(existing.model);
+  const [completionMode, setCompletionMode] = useState<CompletionMode>(
+    existing.completionMode,
   );
-  const [url, setUrl] = useState(
-    String(existing.baseUrl || "http://localhost:11434"),
-  );
-  const [model, setModel] = useState(String(existing.model || ""));
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [modelList, setModelList] = useState<{
+    endpoint: string;
+    names: string[];
+  }>();
+  const [modelsBusy, setModelsBusy] = useState(false);
+  const [modelsError, setModelsError] = useState("");
+  const models = modelList?.endpoint === url.trim() ? modelList.names : null;
+  async function findModels() {
+    const endpoint = url.trim();
+    setModelsBusy(true);
+    setModelsError("");
+    try {
+      const response = await api<{ name: string }[]>("assistant_models", {
+        config: { provider: "ollama", endpoint, model: "", timeoutSeconds: 8 },
+      });
+      setModelList({
+        endpoint,
+        names: response.map(({ name }) => name).sort(),
+      });
+    } catch (e) {
+      setModelsError(errorMessage(e));
+    } finally {
+      setModelsBusy(false);
+    }
+  }
   async function save() {
     setBusy(true);
     setError("");
+    setMessage("");
     try {
       await onSave({
-        ai: { provider, baseUrl: url, model, ...(apiKey ? { apiKey } : {}) },
+        ai: {
+          provider,
+          baseUrl: url.trim(),
+          model: model.trim(),
+          completionMode: provider === "ollama" ? completionMode : "off",
+          ...(provider !== "ollama" && apiKey ? { apiKey } : {}),
+        },
       });
       setApiKey("");
       setMessage("Configurazione salvata.");
@@ -803,9 +838,12 @@ export function SettingsView({
               value={provider}
               onChange={(e) => {
                 setProvider(e.target.value);
+                setModel("");
+                setModelList(undefined);
+                setModelsError("");
                 setUrl(
                   e.target.value === "ollama"
-                    ? "http://localhost:11434"
+                    ? "http://127.0.0.1:11434"
                     : "https://api.openai.com/v1",
                 );
               }}
@@ -817,20 +855,73 @@ export function SettingsView({
             </select>
           </Field>
           <Field label="Indirizzo del servizio">
-            <input value={url} onChange={(e) => setUrl(e.target.value)} />
-          </Field>
-          <Field
-            label="Nome modello"
-            hint="Inserisci il nome esatto del modello disponibile nel servizio."
-          >
             <input
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder={
-                provider === "ollama" ? "qwen2.5-coder:14b" : "Nome modello"
-              }
+              value={url}
+              disabled={modelsBusy}
+              onChange={(e) => {
+                setUrl(e.target.value);
+                setModelsError("");
+              }}
             />
           </Field>
+          <Field label="Nome modello">
+            {provider === "ollama" && models?.length ? (
+              <select value={model} onChange={(e) => setModel(e.target.value)}>
+                <option value="">Scegli un modello</option>
+                {model && !models.includes(model) && (
+                  <option value={model}>{model} (configurato)</option>
+                )}
+                {models.map((name) => (
+                  <option key={name}>{name}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="Nome esatto del modello"
+              />
+            )}
+          </Field>
+          {provider === "ollama" && (
+            <>
+              <div className="row">
+                <Button
+                  onClick={findModels}
+                  busy={modelsBusy}
+                  disabled={!url.trim()}
+                >
+                  <RefreshCw size={14} />
+                  Cerca modelli locali
+                </Button>
+                {models && (
+                  <span className="muted small">
+                    {models.length === 0
+                      ? "Ollama raggiungibile, nessun modello disponibile."
+                      : `Ollama raggiungibile · ${models.length} modelli`}
+                  </span>
+                )}
+              </div>
+              {modelsError && <Notice tone="error">{modelsError}</Notice>}
+              <Field
+                label="Suggerimenti nell’editor"
+                hint="Ollama riceve il testo vicino al cursore. Accetta con Tab o chiudi con Esc."
+              >
+                <select
+                  value={completionMode}
+                  onChange={(event) =>
+                    setCompletionMode(event.target.value as CompletionMode)
+                  }
+                >
+                  <option value="off">Disattivati</option>
+                  <option value="manual">Su richiesta (Ctrl+Alt+Spazio)</option>
+                  <option value="automatic">
+                    Automatici durante la scrittura
+                  </option>
+                </select>
+              </Field>
+            </>
+          )}
           {provider !== "ollama" && (
             <Field
               label="Chiave API"
@@ -916,88 +1007,164 @@ export function SettingsView({
   );
 }
 
-export function AssistantPanel({
-  sessionId,
-  query,
-  rows,
-  settings,
-  onClose,
-  onQuery,
-}: {
+interface AssistantPanelProps {
+  open: boolean;
   sessionId: string;
+  quickSessionId?: string;
+  documentId: string;
+  engine: Engine;
   query: string;
   rows: unknown[];
   settings: Record<string, unknown>;
   onClose: () => void;
-  onQuery: (query: string) => void;
+  onNewQuery: (query: string, engine: Engine) => void;
+  newQueryLabel?: string;
+  onInsertQuery: (query: string) => void;
+  onSettings: () => void;
+}
+
+export function AssistantPanel(props: AssistantPanelProps) {
+  const config = readAssistantSettings(props.settings);
+  const scope = JSON.stringify([
+    config.provider,
+    config.endpoint,
+    config.model,
+    props.engine,
+    props.sessionId,
+    props.quickSessionId,
+    props.documentId,
+  ]);
+  return <AssistantConversation key={scope} {...props} config={config} />;
+}
+
+function AssistantConversation({
+  open,
+  sessionId,
+  quickSessionId,
+  engine,
+  query,
+  rows,
+  config,
+  onClose,
+  onNewQuery,
+  newQueryLabel,
+  onInsertQuery,
+  onSettings,
+}: AssistantPanelProps & {
+  config: ReturnType<typeof readAssistantSettings>;
 }) {
-  const [messages, setMessages] = useState<{ role: string; content: string }[]>(
-    [],
-  );
+  const [turns, setTurns] = useState<AssistantTurn[]>([]);
+  const [pending, setPending] = useState("");
   const [input, setInput] = useState("");
   const [includeSchema, setIncludeSchema] = useState(false);
-  const [includeQuery, setIncludeQuery] = useState(true);
+  const [includeQuery, setIncludeQuery] = useState(
+    config.provider === "ollama",
+  );
   const [includeRows, setIncludeRows] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  async function send(text = input) {
-    if (busy || !text.trim()) return;
-    setBusy(true);
+  const inFlight = useRef(false);
+  const transcript = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (transcript.current)
+      transcript.current.scrollTop = transcript.current.scrollHeight;
+  }, [open, pending, turns]);
+
+  const busy = Boolean(pending);
+  const configured = Boolean(config.model.trim());
+  function clearConversation() {
+    setTurns([]);
     setError("");
-    setMessages((old) => [...old, { role: "user", content: text }]);
+  }
+  async function send(text = input) {
+    const question = text.trim();
+    if (!configured || inFlight.current || !question) return;
+    inFlight.current = true;
+    setPending(question);
+    setError("");
     setInput("");
     try {
-      const config = (settings.ai || {}) as Record<string, unknown>;
+      const shareRows = includeRows && rows.length > 0;
       const answer = await api<string>("assistant_chat", {
         request: {
           sessionId,
-          message: text,
-          query,
-          provider: config.provider || "ollama",
-          model: config.model || "",
-          includeSchema,
-          includeQuery,
-          includeRows,
-          rows: includeRows ? rows : undefined,
+          quickSessionId,
+          engine,
+          message: question,
+          history: assistantHistory(turns),
+          query: includeQuery ? query : undefined,
+          provider: config.provider,
+          endpoint: config.endpoint,
+          model: config.model,
+          includeSchema: includeSchema && Boolean(quickSessionId || sessionId),
+          includeQuery: includeQuery && Boolean(query),
+          includeRows: shareRows,
+          rows: shareRows ? rows.slice(0, 20) : undefined,
         },
       });
-      setMessages((old) => [...old, { role: "assistant", content: answer }]);
+      setTurns((old) => [
+        ...old.slice(-7),
+        { user: question, assistant: answer },
+      ]);
     } catch (e) {
       setError(errorMessage(e));
+      setInput((current) => current || question);
     } finally {
-      setBusy(false);
+      inFlight.current = false;
+      setPending("");
     }
   }
+
+  if (!open) return null;
   return (
-    <aside className="assistant-panel">
+    <aside className="assistant-panel" aria-label="Assistente query">
       <div className="panel-heading">
         <h2>
           <Bot size={18} />
           Assistente
         </h2>
+        <div className="spacer" />
+        <Button
+          variant="ghost"
+          onClick={onSettings}
+          title="Impostazioni assistente"
+          aria-label="Impostazioni assistente"
+        >
+          <Settings2 size={15} />
+        </Button>
         <Button variant="ghost" onClick={onClose}>
           Chiudi
         </Button>
       </div>
-      <p className="muted small">Spiegazioni ed esempi sulla query corrente.</p>
+      <p className="muted small">
+        {config.provider === "ollama" ? "Ollama locale" : "Servizio cloud"}
+        {configured
+          ? ` · ${config.model}`
+          : " · Scegli un modello nelle impostazioni"}
+        {configured && ` · ${ENGINE_LABELS[engine]}`}
+      </p>
       <div className="assistant-suggestions">
         <button
+          disabled={!configured || busy}
           onClick={() =>
             send(
-              "Spiega questa query passo dopo passo, usando lo schema disponibile.",
+              "Spiega la query passo dopo passo usando il contesto selezionato.",
             )
           }
         >
           Spiega la query
         </button>
         <button
+          disabled={!configured || busy}
           onClick={() =>
-            send("Mostra un esempio simile e spiega come cambia il risultato.")
+            send(
+              "Proponi una query di esempio per questo motore. Metti ogni esempio in un blocco separato etichettato sql o json secondo il motore.",
+            )
           }
         >
-          Un altro esempio
+          Proponi una query
         </button>
         <button
+          disabled={!configured || busy}
           onClick={() =>
             send(
               "Controlla questa query e spiega eventuali errori o miglioramenti.",
@@ -1011,7 +1178,11 @@ export function AssistantPanel({
         <input
           type="checkbox"
           checked={includeQuery}
-          onChange={(e) => setIncludeQuery(e.target.checked)}
+          disabled={busy || (!query && !includeQuery)}
+          onChange={(e) => {
+            clearConversation();
+            setIncludeQuery(e.target.checked);
+          }}
         />
         Includi query corrente
       </label>
@@ -1019,7 +1190,11 @@ export function AssistantPanel({
         <input
           type="checkbox"
           checked={includeSchema}
-          onChange={(e) => setIncludeSchema(e.target.checked)}
+          disabled={busy || !(quickSessionId || sessionId)}
+          onChange={(e) => {
+            clearConversation();
+            setIncludeSchema(e.target.checked);
+          }}
         />
         Includi struttura del database
       </label>
@@ -1027,46 +1202,72 @@ export function AssistantPanel({
         <input
           type="checkbox"
           checked={includeRows}
-          onChange={(e) => setIncludeRows(e.target.checked)}
-          disabled={!rows.length}
+          onChange={(e) => {
+            clearConversation();
+            setIncludeRows(e.target.checked);
+          }}
+          disabled={busy || (!rows.length && !includeRows)}
         />
         Includi fino a 20 righe del risultato
       </label>
-      <div className="chat-messages">
-        {!messages.length && (
+      <div className="row assistant-conversation-tools">
+        <span className="muted small">
+          I cambi di contesto avviano una nuova conversazione.
+        </span>
+        <Button
+          variant="ghost"
+          disabled={busy || !turns.length}
+          onClick={clearConversation}
+        >
+          Azzera
+        </Button>
+      </div>
+      <div
+        className="chat-messages"
+        ref={transcript}
+        role="log"
+        aria-live="polite"
+      >
+        {!turns.length && !pending && (
           <div className="chat-empty">
             <Bot size={28} />
-            <p>Parti da una query o da una domanda.</p>
-            <small>
-              {includeRows
-                ? "Sono incluse fino a 20 righe selezionate."
-                : "Le righe dei risultati non vengono incluse."}
-            </small>
+            <p>Chiedi una spiegazione o una query da rivedere nell’editor.</p>
           </div>
         )}
-        {messages.map((message, index) => (
-          <div key={index} className={`chat-message ${message.role}`}>
-            <small>{message.role === "user" ? "TU" : "ASSISTENTE"}</small>
-            <div>{message.content}</div>
-            {message.role === "assistant" &&
-              message.content.match(
-                /```(?:sql|json|javascript)?\s*\n([\s\S]*?)```/i,
-              )?.[1] && (
-                <Button
-                  variant="ghost"
-                  onClick={() =>
-                    onQuery(
-                      message.content.match(
-                        /```(?:sql|json|javascript)?\s*\n([\s\S]*?)```/i,
-                      )![1],
-                    )
-                  }
-                >
-                  Apri codice nell’editor
-                </Button>
+        {turns.map((turn, index) => (
+          <div key={index}>
+            <div className="chat-message user">
+              <small>Tu</small>
+              <div>{turn.user}</div>
+            </div>
+            <div className="chat-message assistant">
+              <small>Assistente</small>
+              <div>{turn.assistant}</div>
+              {assistantQueryBlocks(turn.assistant, engine === "mongodb").map(
+                (code, codeIndex) => (
+                  <div className="row assistant-code-actions" key={codeIndex}>
+                    <small>{`Blocco ${codeIndex + 1}`}</small>
+                    <Button variant="ghost" onClick={() => onInsertQuery(code)}>
+                      Inserisci
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => onNewQuery(code, engine)}
+                    >
+                      {newQueryLabel || "Nuova scheda"}
+                    </Button>
+                  </div>
+                ),
               )}
+            </div>
           </div>
         ))}
+        {pending && (
+          <div className="chat-message user">
+            <small>Tu</small>
+            <div>{pending}</div>
+          </div>
+        )}
         {busy && <p className="muted small">L’assistente sta rispondendo…</p>}
       </div>
       {error && <Notice tone="error">{error}</Notice>}
@@ -1082,12 +1283,14 @@ export function AssistantPanel({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Chiedi una spiegazione o un esempio…"
+          disabled={!configured}
+          maxLength={8192}
           rows={3}
         />
         <Button
           type="submit"
           variant="primary"
-          disabled={!input.trim()}
+          disabled={!configured || !input.trim()}
           busy={busy}
         >
           <Send size={14} />

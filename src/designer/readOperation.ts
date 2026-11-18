@@ -1,5 +1,7 @@
 import type { Engine, TableInfo, SchemaSnapshot } from "../types";
 import { quoteIdentifier } from "../components/SchemaBuilders";
+import { maskSqlNonCode } from "../editor/sqlLanguage";
+import { objectKey } from "../utils";
 export type OperationKind =
   | "select"
   | "findByKey"
@@ -14,6 +16,7 @@ export interface ReadFilter {
   column: string;
   operator: string;
   value: string;
+  boundValue?: unknown;
 }
 export interface ReadOptions {
   operation: OperationKind;
@@ -68,20 +71,28 @@ export function buildOperation(
   const qualified = (t: TableInfo) =>
     t.schema ? `${q(t.schema)}.${q(t.name)}` : q(t.name);
   const parameters: WorkbenchParameter[] = [];
-  const bind = (column: string, value: unknown) => {
+  const bind = (column: string, value: unknown, preserveType = false) => {
     const name = `p${parameters.length + 1}`;
     const type =
       table.columns.find((c) => c.name === column)?.dataType || "TEXT";
-    if (typeof value === "string" && /bool/i.test(type)) {
+    if (!preserveType && typeof value === "string" && /bool/i.test(type)) {
       if (!["true", "false", "1", "0"].includes(value.toLowerCase()))
         throw new Error("Il filtro booleano richiede true o false.");
       value = ["true", "1"].includes(value.toLowerCase());
-    } else if (typeof value === "string" && /int/i.test(type)) {
+    } else if (
+      !preserveType &&
+      typeof value === "string" &&
+      /int/i.test(type)
+    ) {
       if (!/^-?\d+$/.test(value))
         throw new Error("Il filtro intero richiede un numero intero.");
       const n = Number(value);
       if (Number.isSafeInteger(n)) value = n;
-    } else if (typeof value === "string" && /real|float|double/i.test(type)) {
+    } else if (
+      !preserveType &&
+      typeof value === "string" &&
+      /real|float|double/i.test(type)
+    ) {
       const n = Number(value);
       if (!Number.isFinite(n)) throw new Error("Inserisci un numero finito.");
       value = n;
@@ -100,7 +111,10 @@ export function buildOperation(
   if (
     o.orderBy &&
     !table.columns.some((c) => c.name === o.orderBy) &&
-    !(o.operation === "aggregate" && o.orderBy === "totale")
+    !(
+      o.operation === "aggregate" &&
+      o.orderBy === (engine === "mongodb" ? "total" : "totale")
+    )
   )
     throw new Error("Campo di ordinamento sconosciuto.");
   if (
@@ -112,6 +126,17 @@ export function buildOperation(
   const keys = table.columns.filter((c) => c.primaryKey);
   if (o.operation === "custom") {
     if (!o.custom.trim()) throw new Error("Apri prima una query nell’editor.");
+    if (engine !== "mongodb") {
+      const sql = maskSqlNonCode(o.custom).trim().replace(/;\s*$/, "");
+      if (
+        !/^(SELECT|WITH|VALUES)\b/i.test(sql) ||
+        sql.includes(";") ||
+        /\b(INSERT|UPDATE|DELETE|MERGE|INTO)\b/i.test(sql)
+      )
+        throw new Error(
+          "Inserisci una singola istruzione di lettura per generare questo formato.",
+        );
+    }
     return {
       query: o.custom,
       parameters,
@@ -240,13 +265,31 @@ export function buildOperation(
           !table.columns.some((c) => c.name === o.aggregateColumn)
         )
           throw new Error("Scegli un campo per il calcolo.");
+        if (
+          o.orderBy &&
+          o.orderBy !== "total" &&
+          !o.groupBy.includes(o.orderBy)
+        )
+          throw new Error("Ordina per un campo raggruppato oppure per totale.");
+        const groupKey =
+          o.groupBy.length > 1
+            ? Object.fromEntries(o.groupBy.map((name) => [name, "$" + name]))
+            : o.groupBy[0]
+              ? "$" + o.groupBy[0]
+              : null;
+        const sortKey =
+          o.orderBy === "total"
+            ? "total"
+            : o.groupBy.length > 1
+              ? "_id." + o.orderBy
+              : "_id";
         return {
           aggregate: table.name,
           pipeline: [
             ...(Object.keys(f).length ? [{ $match: f }] : []),
             {
               $group: {
-                _id: o.groupBy[0] ? `$${o.groupBy[0]}` : null,
+                _id: groupKey,
                 total:
                   o.aggregate === "COUNT"
                     ? { $sum: 1 }
@@ -255,6 +298,10 @@ export function buildOperation(
                       },
               },
             },
+            ...(o.orderBy
+              ? [{ $sort: { [sortKey]: o.descending ? -1 : 1 } }]
+              : []),
+            { $limit: Math.max(1, Math.min(10000, o.limit || 100)) },
           ],
           cursor: {},
         };
@@ -310,7 +357,7 @@ export function buildOperation(
     )
       throw new Error("Operatore non valido.");
     where.push(
-      `${o.operation === "join" ? "t." : ""}${q(f.column)} ${f.operator}${f.operator.includes("NULL") ? "" : ` ${bind(f.column, f.value)}`}`,
+      `${o.operation === "join" ? "t." : ""}${q(f.column)} ${f.operator}${f.operator.includes("NULL") ? "" : ` ${bind(f.column, f.boundValue ?? f.value, f.boundValue !== undefined)}`}`,
     );
   }
   let query = "";
@@ -334,7 +381,11 @@ export function buildOperation(
       : "*";
     let from = qualified(table);
     if (o.operation === "join") {
-      const other = schema?.tables.find((t) => t.name === o.joinTable);
+      const tables = schema?.tables || [];
+      const byLegacyName = tables.filter((t) => t.name === o.joinTable);
+      const other =
+        tables.find((t) => objectKey(t) === o.joinTable) ||
+        (byLegacyName.length === 1 ? byLegacyName[0] : undefined);
       if (!other || !o.joinLocal || !o.joinForeign)
         throw new Error("Scegli tabella e campi della relazione.");
       if (

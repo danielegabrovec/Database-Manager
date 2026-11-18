@@ -25,4 +25,10 @@ Dalla 0.5 anche il testo modificato nel centro file e gli script generati non an
 
 Questa descrizione riguarda il funzionamento del programma; non sostituisce le informative del titolare dei database o dei servizi esterni usati dall'utente.
 
-Ultimo aggiornamento: 10 novembre 2026.
+## Progetti applicativi e conversazioni locali
+
+Il progetto grafico e i suoi dati di esempio selezionati sono conservati nella memoria locale della WebView e possono essere esportati. Il pacchetto applicativo include codice, schema, manifesto e i dati iniziali scelti. Le differenze nei sorgenti si analizzano nella cartella indicata. Per le integrazioni sono conservate informazioni di confronto e ripristino nella destinazione gestita.
+
+Il gestore delle conversazioni usa un database SQLite locale denominato `assistant-chats.sqlite`. I messaggi e le risposte possono contenere elementi dei dati che l’utente ha scelto di condividere. È possibile eliminare le conversazioni dall’app. Il modello e le preferenze di avvio si conservano localmente. Il flusso per obiettivi di progetto usa Ollama locale e può ricevere la descrizione dell’obiettivo e lo schema scelto. Le modifiche reali sono precedute dalla revisione della destinazione e dalla conferma dell’utente.
+
+Ultimo aggiornamento 18 novembre 2026.

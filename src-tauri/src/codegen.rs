@@ -33,6 +33,16 @@ pub struct GenerateRequest {
     #[serde(default)]
     pub educational: bool,
 }
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteColumnMetadata {
+    pub name: String,
+    #[serde(default)]
+    pub identity: bool,
+    #[serde(default)]
+    pub generated: bool,
+    pub default_value: Option<String>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GeneratedFile {
@@ -143,19 +153,21 @@ impl Context {
                 .collect::<Vec<_>>()
                 .join(" AND ")
         };
-        result.insert = format!(
-            "INSERT INTO {} ({}) VALUES ({})",
-            self.table,
-            self.columns
-                .iter()
-                .map(|c| q(c))
-                .collect::<Vec<_>>()
-                .join(", "),
-            (1..=self.columns.len())
-                .map(p)
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        if !self.columns.is_empty() {
+            result.insert = format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                self.table,
+                self.columns
+                    .iter()
+                    .map(|c| q(c))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                (1..=self.columns.len())
+                    .map(p)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         if !self.update.is_empty() {
             result.update = format!(
                 "UPDATE {} SET {} WHERE {}",
@@ -201,7 +213,16 @@ impl Context {
     }
 }
 
-pub fn generate_project(mut req: GenerateRequest) -> Result<GeneratedProject, String> {
+pub fn generate_project(req: GenerateRequest) -> Result<GeneratedProject, String> {
+    generate_project_for_source(req, None, &[], None)
+}
+
+pub(crate) fn generate_project_for_source(
+    mut req: GenerateRequest,
+    table_schema: Option<&str>,
+    write_metadata: &[WriteColumnMetadata],
+    definition: Option<&str>,
+) -> Result<GeneratedProject, String> {
     req.engine = req.engine.trim().to_lowercase();
     req.language = req.language.trim().to_lowercase();
     req.output = req.output.trim().to_lowercase();
@@ -267,8 +288,28 @@ pub fn generate_project(mut req: GenerateRequest) -> Result<GeneratedProject, St
             return Err(format!("La chiave {} non può essere nullable", column.name));
         }
     }
-    let table = quote_identifier(&req.engine, &req.table);
-    let columns: Vec<String> = req.columns.iter().map(|c| c.name.clone()).collect();
+    let mut table = quote_identifier(&req.engine, &req.table);
+    if let Some(schema) = table_schema.filter(|_| req.engine != "mongodb") {
+        identifier(schema)?;
+        table = format!("{}.{}", quote_identifier(&req.engine, schema), table);
+    }
+    let columns_by_name: std::collections::HashMap<_, _> = write_metadata
+        .iter()
+        .map(|column| (column.name.as_str(), column))
+        .collect();
+    let columns: Vec<String> = req
+        .columns
+        .iter()
+        .filter(|column| {
+            req.engine == "mongodb"
+                || !columns_by_name
+                    .get(column.name.as_str())
+                    .is_some_and(|metadata| {
+                        metadata.identity || metadata.generated || metadata.default_value.is_some()
+                    })
+        })
+        .map(|column| column.name.clone())
+        .collect();
     let keys: Vec<String> = if req.engine == "mongodb" {
         vec!["_id".into()]
     } else {
@@ -278,10 +319,16 @@ pub fn generate_project(mut req: GenerateRequest) -> Result<GeneratedProject, St
             .map(|c| c.name.clone())
             .collect()
     };
-    let nonkeys: Vec<String> = columns
+    let nonkeys: Vec<String> = req
+        .columns
         .iter()
-        .filter(|c| !keys.contains(c))
-        .cloned()
+        .filter(|column| {
+            !keys.contains(&column.name)
+                && !columns_by_name
+                    .get(column.name.as_str())
+                    .is_some_and(|metadata| metadata.identity || metadata.generated)
+        })
+        .map(|column| column.name.clone())
         .collect();
     let placeholder = |n: usize| {
         if req.engine == "postgresql" {
@@ -308,18 +355,26 @@ pub fn generate_project(mut req: GenerateRequest) -> Result<GeneratedProject, St
     } else {
         req.query.trim().into()
     };
-    let insert = format!(
-        "INSERT INTO {table} ({}) VALUES ({})",
-        columns
-            .iter()
-            .map(|c| quote_identifier(&req.engine, c))
-            .collect::<Vec<_>>()
-            .join(", "),
-        (1..=columns.len())
-            .map(placeholder)
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+    let insert = if columns.is_empty() {
+        if matches!(req.engine.as_str(), "mysql" | "mariadb") {
+            format!("INSERT INTO {table} () VALUES ()")
+        } else {
+            format!("INSERT INTO {table} DEFAULT VALUES")
+        }
+    } else {
+        format!(
+            "INSERT INTO {table} ({}) VALUES ({})",
+            columns
+                .iter()
+                .map(|c| quote_identifier(&req.engine, c))
+                .collect::<Vec<_>>()
+                .join(", "),
+            (1..=columns.len())
+                .map(placeholder)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     let update = if keys.is_empty() || nonkeys.is_empty() {
         String::new()
     } else {
@@ -372,6 +427,24 @@ pub fn generate_project(mut req: GenerateRequest) -> Result<GeneratedProject, St
     } else {
         templates::generate(&context)?
     };
+    if let Some(definition) =
+        definition.filter(|_| matches!(context.req.output.as_str(), "project" | "rest"))
+    {
+        result
+            .files
+            .retain(|file| !matches!(file.path.as_str(), "database.sql" | "database.mongodb.js"));
+        if definition.trim().is_empty() {
+            result.notes.push("Lo schema originale va esportato dalla connessione o dal Designer prima di predisporre il database di destinazione.".into());
+        } else {
+            let name = if context.req.engine == "mongodb" {
+                "schema.json"
+            } else {
+                "schema.sql"
+            };
+            result.files.push(file(name, definition));
+            result.notes.push("Il progetto include lo schema della sorgente. Il codice operativo usa la tabella o collezione selezionata.".into());
+        }
+    }
     if context.keys.is_empty() {
         result.notes.push("Tabella senza chiave primaria: modifica e cancellazione per record sono disabilitate; aggiungere una chiave stabile.".into());
     }

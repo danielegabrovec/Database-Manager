@@ -1,0 +1,221 @@
+.local-ai-toolbar.online {
+  color: var(--teal);
+}
+
+.local-ai-overview {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.local-ai-state {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 7px;
+}
+
+.local-ai-state svg {
+  color: var(--muted);
+  fill: var(--muted);
+}
+
+.local-ai-state svg.online {
+  color: var(--teal);
+  fill: var(--teal);
+}
+
+.local-ai-overview > p {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.local-ai-error {
+  color: var(--danger);
+}
+
+.local-ai-settings {
+  padding: 12px;
+}
+
+.local-ai-recents {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.local-ai-recents button {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-ai-workbench {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  color: var(--text);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.local-ai-workbench > .local-ai-settings {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(44vh, 355px);
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.local-ai-workbench > .notice {
+  max-height: 78px;
+  overflow: auto;
+}
+
+.local-ai-chat-header,
+.local-ai-chat-tools,
+.local-ai-composer,
+.local-ai-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.local-ai-chat-header h2 {
+  font-size: 16px;
+}
+
+.local-ai-drawer-switch {
+  display: none;
+}
+
+.ai-overlay .local-ai-drawer-switch {
+  display: flex;
+}
+
+@media (max-width: 1250px) {
+  .local-ai-drawer-switch {
+    display: flex;
+  }
+}
+
+.local-ai-chat-tools > select {
+  flex: 1 1 120px;
+  width: auto;
+  min-width: 0;
+}
+
+.local-ai-transcript {
+  display: flex;
+  flex: 1 1 210px;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 5px 1px 8px;
+  scrollbar-width: thin;
+}
+
+.local-ai-chat-empty {
+  color: var(--muted);
+  margin: auto;
+  text-align: center;
+}
+
+.local-ai-pair {
+  display: grid;
+  gap: 9px;
+}
+
+.local-ai-user,
+.local-ai-answer {
+  max-width: min(100%, 80rem);
+  padding: 9px 12px;
+  border-radius: 7px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.local-ai-user {
+  align-self: end;
+  justify-self: end;
+  white-space: pre-wrap;
+  background: var(--accent-soft);
+}
+
+.local-ai-answer {
+  display: grid;
+  gap: 9px;
+  background: var(--bg);
+}
+
+.local-ai-prose {
+  white-space: pre-wrap;
+}
+
+.local-ai-code {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--editor);
+}
+
+.local-ai-code > .row {
+  flex-wrap: wrap;
+  padding: 4px 7px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.local-ai-code pre {
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  overflow-wrap: normal;
+  font-size: 12px;
+}
+
+.local-ai-compose {
+  display: grid;
+  gap: 8px;
+  margin-top: auto;
+  flex-shrink: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.local-ai-context {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.local-ai-context label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.local-ai-composer {
+  align-items: flex-end;
+}
+
+.local-ai-composer textarea {
+  width: auto;
+  flex: 1 1 175px;
+  min-width: 0;
+  background: var(--bg);
+  resize: vertical;
+}
+
+.workbench-assistant .local-ai-workbench {
+  border-left: 1px solid var(--border);
+}

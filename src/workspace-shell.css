@@ -1,0 +1,139 @@
+/* Keep the route switcher, file tree and database tree usable in the same column. */
+.app-shell.dbm-workbench {
+  position: relative;
+  grid-template-columns: var(--explorer-width, 250px) minmax(0, 1fr);
+}
+.app-shell.dbm-workbench.with-assistant {
+  grid-template-columns: var(--explorer-width, 250px) minmax(0, 1fr) var(
+      --assistant-width,
+      335px
+    );
+}
+.workspace-quick-links {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 15px 8px;
+}
+.workspace-quick-links button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.table-tree-row {
+  display: flex;
+  align-items: stretch;
+}
+.table-tree-row > button:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.table-tree .table-tree-row > .table-structure-link {
+  flex: 0 0 29px;
+  width: 29px;
+  justify-content: center;
+  padding: 0;
+}
+.app-shell .sidebar .workspace-navigation {
+  min-height: 76px;
+  max-height: 23vh;
+  flex: 0 2 auto;
+}
+.workbench-assistant {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+.workbench-assistant[hidden] {
+  display: none;
+}
+.workbench-assistant > .assistant-panel {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+.assistant-resize {
+  position: absolute;
+  width: 7px;
+  inset: 0 auto 0 -3px;
+  z-index: 3;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.assistant-resize:hover,
+.assistant-resize:focus-visible {
+  background: var(--accent);
+  opacity: 0.55;
+}
+.workspace-open-tabs {
+  display: flex;
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  overflow: auto;
+  min-height: 38px;
+  flex: none;
+  max-width: 100%;
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--border);
+  scrollbar-width: thin;
+}
+.workspace-open-tabs > div {
+  display: flex;
+  align-items: stretch;
+  border-right: 1px solid var(--border);
+}
+.workspace-open-tabs > div.current {
+  background: var(--surface);
+  box-shadow: inset 0 2px var(--accent);
+}
+.workspace-open-tabs button {
+  background: transparent;
+  color: var(--text);
+  border: 0;
+  padding: 7px 12px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-open-tabs .close-workspace-tab {
+  display: grid;
+  place-items: center;
+  padding: 7px 7px 7px 0;
+}
+.workspace-open-tabs button:hover {
+  color: var(--accent);
+}
+.workspace-wizard-routes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+}
+.workspace-wizard-routes button {
+  justify-content: start;
+  text-align: left;
+}
+
+@media (max-width: 1250px) {
+  .app-shell.dbm-workbench.with-assistant {
+    grid-template-columns: min(var(--explorer-width, 220px), 35vw) minmax(
+        0,
+        1fr
+      );
+  }
+  .app-shell.dbm-workbench {
+    grid-template-columns: min(var(--explorer-width, 220px), 35vw) minmax(
+        0,
+        1fr
+      );
+  }
+  .workbench-assistant {
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: min(var(--assistant-width, 335px), 90vw);
+    z-index: 12;
+    box-shadow: -8px 0 30px #0004;
+  }
+}

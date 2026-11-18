@@ -98,7 +98,7 @@ export function WorkspaceNavigation({
       ref={nav}
       onKeyDown={handleKey}
     >
-      {NAV_STANDALONE.slice(0, 2).map((item) => itemButton(item))}
+      {NAV_STANDALONE.slice(0, 3).map((item) => itemButton(item))}
       <div className="workspace-nav-groups">
         {NAV_GROUPS.map((group) => {
           const isOpen = expanded === group.id;
@@ -136,7 +136,7 @@ export function WorkspaceNavigation({
           );
         })}
       </div>
-      {NAV_STANDALONE.slice(2).map((item) => itemButton(item))}
+      {NAV_STANDALONE.slice(3).map((item) => itemButton(item))}
     </nav>
   );
 }

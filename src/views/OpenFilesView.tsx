@@ -72,6 +72,7 @@ export interface OpenFilesViewProps {
   onRecoveryError?: (message: string) => void;
   onBusyChange?: (busy: boolean) => void;
   initialPath?: string;
+  initialPathToken?: number;
   initialDraft?: GeneratedFileDraft;
   onReturnToCatalog?: () => void;
   openRequestToken?: number;
@@ -88,6 +89,13 @@ export interface OpenFilesViewProps {
   ) => void;
   onOpenSourceText?: (text: string, language: string, path?: string) => void;
   onImportScript?: (path: string) => void;
+  onFolderChange?: (path: string) => void;
+  onDesignSource?: (
+    name: string,
+    source: string,
+    format: "sql" | "mongodb" | "source",
+  ) => void;
+  onGraphSource?: (text: string) => void;
   onNewConnection?: () => void;
   onDirtyChange?: (dirty: boolean) => void;
 }
@@ -369,6 +377,7 @@ export function OpenFilesView({
   onRecoveryError,
   onBusyChange,
   initialPath,
+  initialPathToken,
   initialDraft,
   onReturnToCatalog,
   openRequestToken,
@@ -380,6 +389,9 @@ export function OpenFilesView({
   onOpenQuery,
   onOpenSourceText,
   onImportScript,
+  onFolderChange,
+  onDesignSource,
+  onGraphSource,
   onNewConnection,
   onDirtyChange,
 }: OpenFilesViewProps) {
@@ -525,16 +537,17 @@ export function OpenFilesView({
       window.removeEventListener("dbm:workspace-file-saved", changed);
   }, [document?.path, document?.encoding, dirty, busy]);
   useEffect(() => {
+    const request = `${initialPathToken || 0}:${initialPath}`;
     if (
       active &&
       initialPath &&
-      initialPath !== initialHandled.current &&
+      request !== initialHandled.current &&
       busy !== "save"
     ) {
-      initialHandled.current = initialPath;
+      initialHandled.current = request;
       void openPath(initialPath);
     }
-  }, [initialPath, active, busy]);
+  }, [initialPath, initialPathToken, active, busy]);
   useEffect(() => {
     if (
       active &&
@@ -904,6 +917,7 @@ export function OpenFilesView({
           : next,
       );
       setFolderPath(next.path);
+      if (offset === 0) onFolderChange?.(next.path);
       if (offset === 0) setFolderSearch("");
     } catch (error) {
       setFolderError(errorMessage(error));
@@ -1910,6 +1924,22 @@ export function OpenFilesView({
                             Apri sorgente
                           </Button>
                         )}
+                        {onDesignSource &&
+                          ["sql", "source"].includes(document.kind) &&
+                          document.content !== null && (
+                            <Button
+                              disabled={!draft.trim() || !!busy}
+                              onClick={() =>
+                                onDesignSource(
+                                  document.name,
+                                  draft,
+                                  document.kind === "sql" ? "sql" : "source",
+                                )
+                              }
+                            >
+                              <Code2 size={14} /> Importa schema nel designer
+                            </Button>
+                          )}
                         <Button
                           variant="ghost"
                           onClick={() => void copyText(draft)}
@@ -2059,6 +2089,15 @@ export function OpenFilesView({
                         <FileCode2 size={14} />
                         Mostra origine
                       </Button>
+                      {onGraphSource && operation.confidence === "literal" && (
+                        <Button
+                          variant="ghost"
+                          disabled={!extractionCurrent}
+                          onClick={() => onGraphSource(operation.text)}
+                        >
+                          Apri nel grafo
+                        </Button>
+                      )}
                       <Button
                         variant="ghost"
                         onClick={() => void copyText(operation.text)}

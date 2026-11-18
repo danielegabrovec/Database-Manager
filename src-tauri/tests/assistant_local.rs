@@ -41,6 +41,7 @@ async fn ollama_remote_alias_is_rejected_before_user_context_is_sent() {
         config,
         prompt: "PRIVATE_PROMPT".into(),
         engine: Some("sqlite".into()),
+        history: Vec::new(),
         consent: ContextConsent {
             include_query: true,
             include_schema: true,
@@ -78,6 +79,7 @@ async fn existing_ollama_local_synthetic_select_smoke() {
         prompt: "Scrivi soltanto questa query SQL, senza spiegazioni: SELECT 1 AS risultato;"
             .into(),
         engine: Some("sqlite".into()),
+        history: Vec::new(),
         consent: ContextConsent::default(),
         query: None,
         schema: None,
@@ -100,4 +102,54 @@ async fn existing_ollama_local_synthetic_select_smoke() {
         .to_uppercase()
         .contains("SELECT"));
     assert!(receipt["includedContext"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn editor_completion_uses_only_local_model_and_bounded_cursor_context() {
+    let app = Router::new()
+        .route(
+            "/api/tags",
+            get(|| async { Json(json!({"models":[{"name":"local-coder"}]})) }),
+        )
+        .route(
+            "/api/show",
+            post(|Json(body): Json<Value>| async move {
+                assert_eq!(body, json!({"model":"local-coder"}));
+                Json(json!({"model":"local-coder"}))
+            }),
+        )
+        .route(
+            "/api/chat",
+            post(|Json(body): Json<Value>| async move {
+                assert_eq!(body["model"], "local-coder");
+                assert_eq!(body["stream"], false);
+                let context: Value =
+                    serde_json::from_str(body["messages"][1]["content"].as_str().unwrap())
+                        .unwrap();
+                assert_eq!(context, json!({"beforeCursor":"SELECT","afterCursor":";"}));
+                Json(json!({"message":{"content":"{\"insertion\":\" 1\"}"}}))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let config = AiConfig {
+        provider: AiProvider::Ollama,
+        endpoint: format!("http://127.0.0.1:{port}"),
+        model: "local-coder".into(),
+        timeout_seconds: 5,
+    };
+    assert_eq!(
+        assistant::complete_editor(config.clone(), "sqlite", "SELECT", ";")
+            .await
+            .unwrap(),
+        " 1"
+    );
+    assert!(assistant::complete_editor(config, "sqlite", &"x".repeat(16385), "")
+        .await
+        .unwrap_err()
+        .contains("limite"));
+    server.abort();
 }
