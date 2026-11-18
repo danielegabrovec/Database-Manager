@@ -18,6 +18,7 @@ import type { LucideIcon } from "lucide-react";
 
 export type WorkspaceView =
   | "home"
+  | "project"
   | "files"
   | "editor"
   | "quick"
@@ -40,6 +41,7 @@ export interface NavigationItem {
 }
 
 export const NAV_FLAT: readonly NavigationItem[] = [
+  { id: "project", label: "Progetto applicativo", icon: Layers3 },
   { id: "files", label: "Apri file e database", icon: FolderOpen },
   { id: "editor", label: "Editor SQL / MongoDB", icon: Terminal },
   { id: "quick", label: "Query rapide", icon: Zap },
@@ -73,7 +75,7 @@ export const NAV_GROUPS: readonly NavigationGroup[] = [
     id: "database",
     label: "Database",
     icon: Database,
-    items: items("data", "schema", "designer", "builder"),
+    items: items("project", "data", "schema", "designer", "builder"),
   },
   {
     id: "catalog",

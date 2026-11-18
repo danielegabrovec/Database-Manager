@@ -4,7 +4,7 @@
 
 Database Manager offre editor e strumenti visuali per SQLite, PostgreSQL, MySQL, MariaDB e MongoDB. La distribuzione disponibile è Windows x64. I compilatori e gli interpreti dei programmi esportati si installano separatamente.
 
-Questa pagina descrive la release 0.5.1. Per le funzionalità nel ramo di sviluppo consulta la [guida al workbench grafico](WORKBENCH-GRAFICO.md).
+Questa pagina documenta le funzioni della 0.5.1. Per Home, AI locale, progetti multidatabase e integrazione nei programmi consulta la [guida 0.6.0](WORKBENCH-0.6.0.md).
 
 Per i comandi passo passo, le operazioni da PowerShell e il prontuario con spiegazioni ed esempi usa **Guida** nella barra inferiore oppure la [guida operativa completa](GUIDA-OPERATIVA-POWERSHELL-QUERY.md): 50 passi e 77 esempi. Le novità sono in [VERSIONE-0.5.md](VERSIONE-0.5.md).
 

@@ -16,6 +16,7 @@ export interface ReadFilter {
   column: string;
   operator: string;
   value: string;
+  boundValue?: unknown;
 }
 export interface ReadOptions {
   operation: OperationKind;
@@ -70,20 +71,28 @@ export function buildOperation(
   const qualified = (t: TableInfo) =>
     t.schema ? `${q(t.schema)}.${q(t.name)}` : q(t.name);
   const parameters: WorkbenchParameter[] = [];
-  const bind = (column: string, value: unknown) => {
+  const bind = (column: string, value: unknown, preserveType = false) => {
     const name = `p${parameters.length + 1}`;
     const type =
       table.columns.find((c) => c.name === column)?.dataType || "TEXT";
-    if (typeof value === "string" && /bool/i.test(type)) {
+    if (!preserveType && typeof value === "string" && /bool/i.test(type)) {
       if (!["true", "false", "1", "0"].includes(value.toLowerCase()))
         throw new Error("Il filtro booleano richiede true o false.");
       value = ["true", "1"].includes(value.toLowerCase());
-    } else if (typeof value === "string" && /int/i.test(type)) {
+    } else if (
+      !preserveType &&
+      typeof value === "string" &&
+      /int/i.test(type)
+    ) {
       if (!/^-?\d+$/.test(value))
         throw new Error("Il filtro intero richiede un numero intero.");
       const n = Number(value);
       if (Number.isSafeInteger(n)) value = n;
-    } else if (typeof value === "string" && /real|float|double/i.test(type)) {
+    } else if (
+      !preserveType &&
+      typeof value === "string" &&
+      /real|float|double/i.test(type)
+    ) {
       const n = Number(value);
       if (!Number.isFinite(n)) throw new Error("Inserisci un numero finito.");
       value = n;
@@ -348,7 +357,7 @@ export function buildOperation(
     )
       throw new Error("Operatore non valido.");
     where.push(
-      `${o.operation === "join" ? "t." : ""}${q(f.column)} ${f.operator}${f.operator.includes("NULL") ? "" : ` ${bind(f.column, f.value)}`}`,
+      `${o.operation === "join" ? "t." : ""}${q(f.column)} ${f.operator}${f.operator.includes("NULL") ? "" : ` ${bind(f.column, f.boundValue ?? f.value, f.boundValue !== undefined)}`}`,
     );
   }
   let query = "";

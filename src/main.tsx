@@ -34,6 +34,7 @@ import { loader } from "@monaco-editor/react";
 import editorWorker from "monaco-editor/editor/editor.worker.js?worker";
 import jsonWorker from "monaco-editor/languages/features/json/json.worker.js?worker";
 import App from "./App";
+import { LocalAiProvider } from "./components/LocalAssistantWorkbench";
 import { ConfirmationProvider } from "./components/ConfirmationProvider";
 import "./styles.css";
 import "./refinements.css";
@@ -47,7 +48,9 @@ loader.config({ monaco: monaco as typeof import("monaco-editor") });
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ConfirmationProvider>
-      <App />
+      <LocalAiProvider>
+        <App />
+      </LocalAiProvider>
     </ConfirmationProvider>
   </React.StrictMode>,
 );

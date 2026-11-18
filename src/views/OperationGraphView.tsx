@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import {
   ReactFlow,
   Background,
@@ -40,6 +46,7 @@ import {
   loadGraphDraft,
   removeGraphNode,
   type FilterDraft,
+  type GraphDraft,
   type GraphNode,
   type GraphOperator,
   type ValueDraft,
@@ -60,6 +67,11 @@ type Props = {
   sessionId: string;
   readOnly: boolean;
   workspaceKey?: string;
+  projectGraph?: {
+    id: string;
+    draft: GraphDraft;
+    onChange: Dispatch<SetStateAction<GraphDraft>>;
+  };
   queryDraft?: GraphQueryDraft;
   disabled?: boolean;
   onBusyChange?: (busy: boolean) => void;
@@ -72,7 +84,7 @@ type Props = {
 type PreparedWrite = {
   query: string;
   parameters: Record<string, unknown>;
-  fingerprint: string;
+  fingerprint?: string;
 };
 type Kind = GraphNode["id"];
 const KINDS = Object.keys(GRAPH_LABELS) as Kind[];
@@ -126,7 +138,9 @@ const NODE_TYPES = { operation: OperationCard };
 const CARD_SIZE = { width: 200, height: 68 };
 
 export function OperationGraphView(props: Props) {
-  const key = `dbm-operation-graph-v1:${JSON.stringify([props.engine, props.workspaceKey || "", props.schema?.database || ""])}`;
+  const key =
+    props.projectGraph?.id ||
+    `dbm-operation-graph-v1:${JSON.stringify([props.engine, props.workspaceKey || "", props.schema?.database || ""])}`;
   return <OperationGraph key={key} {...props} storageKey={key} />;
 }
 
@@ -137,12 +151,17 @@ function OperationGraph({
   sessionId,
   readOnly,
   queryDraft,
+  projectGraph,
   disabled,
   onBusyChange,
   onOpenQuery,
   storageKey,
 }: Props & { storageKey: string }) {
-  const [draft, setDraft] = useState(() => loadGraphDraft(storageKey));
+  const [localDraft, setLocalDraft] = useState(() =>
+    projectGraph ? initialGraph() : loadGraphDraft(storageKey),
+  );
+  const draft = projectGraph?.draft ?? localDraft;
+  const setDraft = projectGraph?.onChange ?? setLocalDraft;
   const [selection, setSelection] = useState<Kind>("source");
   const [busy, setBusy] = useState(false);
   const [prepared, setPrepared] = useState<{
@@ -183,12 +202,13 @@ function OperationGraph({
   const issue = failure?.key === executionKey ? failure.message : "";
 
   useEffect(() => {
+    if (projectGraph) return;
     try {
       localStorage.setItem(storageKey, JSON.stringify(draft));
     } catch {
       /* storage unavailable */
     }
-  }, [draft, storageKey]);
+  }, [draft, storageKey, projectGraph]);
 
   function patchNode(patch: Partial<GraphNode>) {
     setDraft((old) => ({
@@ -249,7 +269,13 @@ function OperationGraph({
   async function run(action: "preview" | "execute") {
     if (
       !compiled ||
-      !sessionId ||
+      (!sessionId &&
+        !(
+          projectGraph &&
+          schema &&
+          compiled.kind === "write" &&
+          action === "preview"
+        )) ||
       busy ||
       disabled ||
       (compiled.kind === "write" && readOnly)
@@ -269,14 +295,20 @@ function OperationGraph({
         if (selectionRef.current === executionKey)
           setResult({ key: executionKey, value: output });
       } else if (action === "preview") {
-        const output = await api<PreparedWrite>("preview_graph_write", {
-          sessionId,
-          operation: compiled.operation,
-        });
+        const output =
+          projectGraph && schema
+            ? await api<PreparedWrite>("compile_project_write", {
+                schema,
+                operation: compiled.operation,
+              })
+            : await api<PreparedWrite>("preview_graph_write", {
+                sessionId,
+                operation: compiled.operation,
+              });
         if (selectionRef.current === executionKey)
           setPrepared({ key: executionKey, value: output });
       } else if (
-        preview &&
+        preview?.fingerprint &&
         (await confirm(
           `${WRITES[compiled.operation.kind]} in ${objectLabel(compiled.operation.table)} su ${schema?.database || "database attivo"}. Confermi l’esecuzione del piano mostrato?`,
         ))
@@ -416,7 +448,9 @@ function OperationGraph({
             deleteKeyCode={null}
             onNodeClick={(_, selected) => setSelection(selected.id as Kind)}
             onNodesChange={(changes) => {
-              const moved = changes.filter((change) => change.type === "position");
+              const moved = changes.filter(
+                (change) => change.type === "position",
+              );
               if (!moved.length) return;
               setDraft((old) => ({
                 ...old,
@@ -905,7 +939,7 @@ function OperationGraph({
             variant="primary"
             disabled={
               !compiled ||
-              !sessionId ||
+              (!sessionId && !(projectGraph && writes)) ||
               (writes && readOnly) ||
               busy ||
               disabled
@@ -929,7 +963,7 @@ function OperationGraph({
               Apri script nell’editor <ArrowRight size={14} />
             </Button>
           )}
-          {writes && preview && (
+          {writes && preview?.fingerprint && (
             <Button
               variant="danger"
               disabled={busy || readOnly || disabled}

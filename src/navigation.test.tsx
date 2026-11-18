@@ -25,6 +25,7 @@ describe("navigazione del workspace", () => {
       "laboratory",
       "library",
       "powershell",
+      "project",
       "quick",
       "schema",
       "settings",

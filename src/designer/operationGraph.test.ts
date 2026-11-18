@@ -25,6 +25,35 @@ function schema(engine: Engine, namespace?: string): SchemaSnapshot {
 }
 
 describe("diagramma operativo", () => {
+  it("mantiene distinta una lettura SQLite con valore INTEGER e TEXT", () => {
+    const database = new DatabaseSync(":memory:");
+    try {
+      database.exec(
+        "CREATE TABLE people(id BLOB PRIMARY KEY, name TEXT); INSERT INTO people VALUES(42, 'numero'), ('42', 'testo');",
+      );
+      const metadata = schema("sqlite");
+      metadata.tables[0].columns[0].dataType = "BLOB";
+      for (const [literal, name] of [
+        ["42", "numero"],
+        ["'42'", "testo"],
+      ]) {
+        const visual = importGraphQuery(
+          { query: `SELECT name FROM people WHERE id=${literal}` },
+          metadata,
+          "sqlite",
+        );
+        const compiled = compileOperationGraph(visual, metadata, "sqlite");
+        if (compiled.kind !== "read") throw new Error("Lettura attesa");
+        expect(
+          database
+            .prepare(compiled.query)
+            .all(compiled.params as Record<string, number | string>),
+        ).toEqual([{ name }]);
+      }
+    } finally {
+      database.close();
+    }
+  });
   it("ricostruisce una lettura SQL e conserva parametri, proiezione e ordinamento", () => {
     const db = new DatabaseSync(":memory:");
     db.exec(

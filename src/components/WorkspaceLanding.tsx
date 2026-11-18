@@ -1,4 +1,15 @@
-import { FilePlus2, FolderOpen, History, Plus } from "lucide-react";
+import { useState } from "react";
+import {
+  ArrowRight,
+  Database,
+  FolderOpen,
+  FilePlus2,
+  History,
+  Layers3,
+  Send,
+  SquareTerminal,
+} from "lucide-react";
+import { LocalAiControls, LocalAiRecents } from "./LocalAssistantWorkbench";
 import "./workspace-start.css";
 
 export interface WorkspaceLandingProps {
@@ -7,57 +18,104 @@ export interface WorkspaceLandingProps {
   onWizard: () => void;
   onResume: () => void;
   canResume: boolean;
+  onProject: (id?: string) => void;
+  onQuick: () => void;
+  onAsk: (question: string) => void;
+  onConversation: (id: string) => void;
+  projects: { id: string; name: string }[];
 }
-
-export function WorkspaceLanding({
-  onOpen,
-  onFolder,
-  onWizard,
-  onResume,
-  canResume,
-}: WorkspaceLandingProps) {
+export function WorkspaceLanding(props: WorkspaceLandingProps) {
+  const [question, setQuestion] = useState("");
   return (
-    <section
-      className="workspace-landing"
-      aria-labelledby="workspace-start-title"
-    >
-      <div>
-        <h1 id="workspace-start-title">Inizia a lavorare</h1>
-        <p className="muted">
-          Apri un file, scegli una cartella oppure crea un database.
-        </p>
-      </div>
-      <div className="workspace-landing-actions">
-        <button type="button" onClick={onOpen}>
-          <FilePlus2 size={20} aria-hidden="true" />
-          <span>
-            <strong>Apri file o database</strong>
-            <small>SQLite, script SQL o codice sorgente</small>
-          </span>
-        </button>
-        <button type="button" onClick={onFolder}>
-          <FolderOpen size={20} aria-hidden="true" />
-          <span>
-            <strong>Apri cartella di lavoro</strong>
-            <small>Sfoglia e apri i file dalla barra laterale</small>
-          </span>
-        </button>
-        <button type="button" onClick={onWizard}>
-          <Plus size={21} aria-hidden="true" />
-          <span>
-            <strong>Crea o collega un database</strong>
-            <small>Segui la procedura guidata</small>
-          </span>
-        </button>
-        {canResume && (
-          <button type="button" onClick={onResume}>
-            <History size={20} aria-hidden="true" />
-            <span>
-              <strong>Riprendi il lavoro</strong>
-              <small>Ritrova le bozze e le schede già aperte</small>
-            </span>
+    <section className="wb-home" aria-labelledby="workspace-start-title">
+      <header>
+        <h1 id="workspace-start-title">Database Manager</h1>
+      </header>
+      <form
+        className="wb-ask"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (question.trim()) {
+            props.onAsk(question.trim());
+            setQuestion("");
+          }
+        }}
+      >
+        <label htmlFor="home-question">Chiedi all’AI locale</label>
+        <textarea
+          id="home-question"
+          value={question}
+          maxLength={8192}
+          onChange={(e) => setQuestion(e.target.value)}
+          placeholder="Scrivi una domanda o descrivi il progetto che vuoi realizzare…"
+          rows={3}
+          onKeyDown={(e) => {
+            if (
+              e.key === "Enter" &&
+              !e.shiftKey &&
+              !e.nativeEvent.isComposing
+            ) {
+              e.preventDefault();
+              e.currentTarget.form?.requestSubmit();
+            }
+          }}
+        />
+        <div className="wb-ask-footer">
+          <LocalAiControls variant="home" />
+          <button
+            type="submit"
+            className="button primary"
+            disabled={!question.trim()}
+          >
+            <Send size={16} />
+            Invia
           </button>
+        </div>
+      </form>
+      <div className="wb-home-actions">
+        {[
+          {
+            label: "Progetto applicativo",
+            icon: Layers3,
+            run: () => props.onProject(),
+          },
+          { label: "Apri file o database", icon: FilePlus2, run: props.onOpen },
+          { label: "Apri cartella", icon: FolderOpen, run: props.onFolder },
+          { label: "Crea database", icon: Database, run: props.onWizard },
+          { label: "Query rapide", icon: SquareTerminal, run: props.onQuick },
+          ...(props.canResume
+            ? [
+                {
+                  label: "Riprendi il lavoro",
+                  icon: History,
+                  run: props.onResume,
+                },
+              ]
+            : []),
+        ].map(({ label, icon: Icon, run }) => (
+          <button key={label} onClick={run}>
+            <Icon size={17} />
+            <span>{label}</span>
+            <ArrowRight size={14} />
+          </button>
+        ))}
+      </div>
+      <div className="wb-home-recents">
+        {props.projects.length > 0 && (
+          <section>
+            <h2>Progetti recenti</h2>
+            {props.projects.map((project) => (
+              <button
+                key={project.id}
+                onClick={() => props.onProject(project.id)}
+              >
+                <Layers3 size={15} />
+                {project.name}
+              </button>
+            ))}
+          </section>
         )}
+        <LocalAiRecents onSelect={props.onConversation} />
       </div>
     </section>
   );

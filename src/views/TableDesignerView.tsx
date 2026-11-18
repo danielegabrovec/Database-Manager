@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import type { Dispatch, ReactNode, SetStateAction } from "react";
 import Editor from "@monaco-editor/react";
 import {
   ReactFlow,
@@ -183,6 +183,7 @@ export function TableDesignerView({
   onCreated,
   schemaImport,
   onSchemaImportHandled,
+  projectDesign,
 }: {
   engine: Engine;
   schema: SchemaSnapshot | null;
@@ -204,15 +205,22 @@ export function TableDesignerView({
   onCreated?: (table: TableInfo) => void;
   schemaImport?: SchemaImportRequest | null;
   onSchemaImportHandled?: () => void;
+  projectDesign?: {
+    tables: DesignTable[];
+    onTablesChange: Dispatch<SetStateAction<DesignTable[]>>;
+  };
 }) {
   const confirm = useConfirmation();
-  const [saved] = useState(() => loadSavedDesign());
-  const [projectEngine, setProjectEngine] = useState<Engine>(
+  const [saved] = useState(() => (projectDesign ? null : loadSavedDesign()));
+  const [localEngine, setProjectEngine] = useState<Engine>(
     () => saved?.engine || engine,
   );
-  const [tables, setTables] = useState<DesignTable[]>(
+  const [localTables, setLocalTables] = useState<DesignTable[]>(
     () => saved?.tables || [newDesignTable(engine)],
   );
+  const projectEngine = projectDesign ? engine : localEngine;
+  const tables = projectDesign?.tables ?? localTables;
+  const setTables = projectDesign?.onTablesChange ?? setLocalTables;
   const [selected, setSelected] = useState(tables[0]?.id || "");
   const [tab, setTab] = useState("structure");
   const [sqlScope, setSqlScope] = useState<"pending" | "project" | "changes">(
@@ -239,6 +247,7 @@ export function TableDesignerView({
     onSchemaImportHandled?.();
   }, [schemaImport, onSchemaImportHandled]);
   useEffect(() => {
+    if (projectDesign) return;
     try {
       localStorage.setItem(
         REFERENCE_POSITIONS_KEY,
@@ -247,19 +256,21 @@ export function TableDesignerView({
         ),
       );
     } catch {}
-  }, [referencePositions]);
+  }, [referencePositions, projectDesign]);
   useEffect(() => {
     try {
-      const project = JSON.stringify({ engine: projectEngine, tables });
-      localStorage.setItem(STORAGE_KEY, project);
-      localStorage.setItem(`${STORAGE_KEY}:${projectEngine}`, project);
+      if (!projectDesign) {
+        const project = JSON.stringify({ engine: projectEngine, tables });
+        localStorage.setItem(STORAGE_KEY, project);
+        localStorage.setItem(`${STORAGE_KEY}:${projectEngine}`, project);
+      }
     } catch {
       setError(
         "Impossibile conservare automaticamente il progetto. Usa Salva progetto per esportare la bozza.",
       );
     }
     setReviewed(false);
-  }, [tables, projectEngine]);
+  }, [tables, projectEngine, projectDesign]);
   const table = tables.find((t) => t.id === selected) || tables[0];
   const describe = (item: ObjectRef) => {
     const { name, schema } = designObject(projectEngine, item);
@@ -288,6 +299,10 @@ export function TableDesignerView({
     [importRequest, validateImport],
   );
   function replaceProject(engine: Engine, next: DesignTable[]) {
+    if (projectDesign && engine !== projectEngine)
+      throw new Error(
+        "Scegli un database di progetto con il motore del sorgente.",
+      );
     setProjectEngine(engine);
     setTables(next);
     setSelected(next[0].id);
@@ -836,7 +851,7 @@ export function TableDesignerView({
         <Field label="Motore del progetto">
           <select
             value={projectEngine}
-            disabled={busy}
+            disabled={busy || !!projectDesign}
             onChange={(e) => {
               const nextEngine = e.target.value as Engine;
               replaceProject(
@@ -1723,6 +1738,7 @@ export function TableDesignerView({
               <Field label="Motore dello schema">
                 <select
                   value={importRequest.engine}
+                  disabled={!!projectDesign}
                   onChange={(event) => {
                     const next = event.target.value as Engine;
                     setImportRequest({ ...importRequest, engine: next });
@@ -1777,7 +1793,9 @@ export function TableDesignerView({
                             source,
                             format,
                             engine:
-                              format === "mongodb" ? "mongodb" : old.engine,
+                              format === "mongodb" && !projectDesign
+                                ? "mongodb"
+                                : old.engine,
                           }
                         : old,
                     );

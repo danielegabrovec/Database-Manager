@@ -2,6 +2,7 @@ use crate::{
     assistant, codegen,
     database::{Handle, Session},
     environment, graph_write, lab,
+    local_ai::{ChatScope, LocalAi, LocalAiConfig, Startup},
     models::*,
     quick_query::QuickQuery,
     sqlite,
@@ -18,6 +19,8 @@ use std::{
 use tokio::sync::RwLock;
 
 pub struct AppState {
+    local_ai: LocalAi,
+    pub(crate) project_runs: crate::project_agent::ProjectRuns,
     pub root: PathBuf,
     pub store: Store,
     pub sessions: RwLock<HashMap<String, Arc<Session>>>,
@@ -49,6 +52,13 @@ fn saved_assistant_config(ai: &Value, timeout_seconds: u64) -> assistant::AiConf
             .into(),
         model: ai["model"].as_str().unwrap_or_default().into(),
         timeout_seconds,
+    }
+}
+fn chat_scope(args: &Value) -> Result<ChatScope, String> {
+    match arg(args, "scope") {
+        "" | "work" => Ok(ChatScope::Work),
+        "quick" => Ok(ChatScope::Quick),
+        _ => Err("Area della conversazione sconosciuta.".into()),
     }
 }
 fn secret_entry(id: &str) -> Result<keyring::Entry, String> {
@@ -149,9 +159,12 @@ impl AppState {
     pub fn new(root: PathBuf) -> Result<Self, String> {
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let store = Store::new(&root.join("workspace.sqlite"))?;
+        let local_ai = LocalAi::new(&root);
         let environments = environment::EnvironmentManager::new(root.clone())?;
         Ok(Self {
+            project_runs: Default::default(),
             root,
+            local_ai,
             store,
             sessions: RwLock::new(HashMap::new()),
             quick_queries: RwLock::new(HashMap::new()),
@@ -187,6 +200,12 @@ impl AppState {
     }
     pub async fn call(&self, command: &str, args: Value) -> Result<Value, String> {
         match command {
+            "inspect_project_sources" => {
+                let directory=arg(&args,"directory").to_owned();
+                tokio::task::spawn_blocking(move || crate::project_sync::inspect(&directory)).await.map_err(|e|e.to_string())?
+            }
+            "project_ai_plan" => crate::project_agent::plan(self, &args).await,
+            "project_ai_cancel" | "cancel_project_test" => { self.project_runs.cancel(arg(&args,"requestId"))?; Ok(json!(true)) }
             "inspect_workspace_file" => {
                 let request: workspace_files::InspectFileRequest = decode(args)?;
                 let file =
@@ -517,6 +536,19 @@ impl AppState {
             "preview_graph_write" | "execute_graph_write" => {
                 self.graph_write(&args, command == "execute_graph_write").await
             }
+            "compile_project_write" => {
+                let schema: SchemaSnapshot = decode(args["schema"].clone())?;
+                let operation: graph_write::Operation = decode(args["operation"].clone())?;
+                let compiled = operation.compile(&schema)?;
+                Ok(json!({"query":compiled.query,"parameters":compiled.parameters}))
+            }
+            "test_project_remote" => crate::project_test::test_remote(self, args).await,
+            "preview_app_integration" | "apply_app_integration" | "rollback_app_integration" |
+            "recover_app_integration" | "diff_app_integration" => {
+                let operation = command.to_owned();
+                tokio::task::spawn_blocking(move || crate::app_integration::command(&operation, args))
+                    .await.map_err(|error| error.to_string())?
+            }
             "quick_query_open" => self.quick_query_open(&args).await,
             "quick_query_schema" => encode(self.quick_query(arg(&args, "sessionId")).await?.schema().await?),
             "quick_query_execute" => {
@@ -557,6 +589,18 @@ impl AppState {
             "generate_workbench" => encode(crate::codegen_workbench::generate_workbench(decode(
                 args.get("request").cloned().ok_or("Richiesta mancante")?,
             )?)?),
+            "generate_application_package" => {
+                let request = decode(args.get("request").cloned().ok_or("Progetto mancante")?)?;
+                encode(tokio::task::spawn_blocking(move || crate::project_files::generate(request))
+                    .await.map_err(|e| e.to_string())??)
+            }
+            "export_application_package" => {
+                let project = decode(args.get("package").cloned().ok_or("Pacchetto mancante")?)?;
+                let parent = PathBuf::from(arg(&args, "destination"));
+                let destination = tokio::task::spawn_blocking(move || crate::project_files::export(project, &parent))
+                    .await.map_err(|e| e.to_string())??;
+                encode(destination.to_string_lossy().to_string())
+            }
             "generate_code" => encode(codegen::generate_project(decode(
                 args.get("request").cloned().ok_or("Richiesta mancante")?,
             )?)?),
@@ -618,6 +662,93 @@ impl AppState {
                     .retain(|_, s| s.profile.id != id);
                 encode(outcome)
             }
+            "local_ai_config" => {
+                if let Some(patch) = args.get("config") {
+                    let next: LocalAiConfig = decode(patch.clone())?;
+                    next.validate()?;
+                    let prior = self.local_ai_config()?;
+                    if prior.endpoint != next.endpoint && self.local_ai.daemon.is_managed().await {
+                        return Err("Spegni l’istanza Ollama aperta prima di modificare il suo indirizzo.".into());
+                    }
+                    if !next.model.is_empty() && (prior.model != next.model || prior.endpoint != next.endpoint) {
+                        assistant::verify_local_ollama(&next.assistant(8)).await?;
+                    }
+                    self.store.update_settings(json!({"localOllama":next}))?;
+                    return encode(next);
+                }
+                encode(self.local_ai_config()?)
+            }
+            "local_ai_status" => {
+                let config = self.local_ai_config()?;
+                let state = self.local_ai.daemon.status(&config.assistant(5)).await;
+                let model_error = if state.online && !config.model.is_empty() {
+                    assistant::verify_local_ollama(&config.assistant(5)).await.err()
+                } else { None };
+                let mut details = encode(state)?;
+                details["modelError"] = encode(model_error)?;
+                Ok(json!({"config":config,"state":details}))
+            }
+            "local_ai_start" => {
+                let config = self.local_ai_config()?;
+                let automatic = args["automatic"].as_bool() == Some(true);
+                if automatic && config.startup != Some(Startup::Automatic) {
+                    return Ok(json!({"accepted":false,"state":null}));
+                }
+                let request = arg(&args, "requestId");
+                let request = if request.is_empty() { uuid::Uuid::new_v4().to_string() } else {
+                    uuid::Uuid::parse_str(request).map_err(|_| "Identificatore di avvio Ollama non valido.")?;
+                    request.to_owned()
+                };
+                encode(self.local_ai.daemon.start(
+                    &config.assistant(5), &request,
+                    || !automatic || self.local_ai.auto_allowed(),
+                    || { if !automatic { self.local_ai.pause_auto(false); } },
+                ).await?)
+            }
+            "local_ai_stop" => {
+                let config = self.local_ai_config()?;
+                if let Some(request) = args["cancelStart"].as_str() {
+                    uuid::Uuid::parse_str(request).map_err(|_| "Identificatore di avvio Ollama non valido.")?;
+                    self.local_ai.daemon.cancel_start(request, || {
+                        self.local_ai.pause_auto(true);
+                        self.local_ai.cancel_all();
+                    }).await?;
+                    return Ok(json!(true));
+                }
+                self.local_ai.daemon.stop(
+                    &config.assistant(5), arg(&args, "fingerprint"),
+                    args["confirmed"].as_bool() == Some(true),
+                    || {
+                        self.local_ai.pause_auto(true);
+                        self.local_ai.cancel_all();
+                    },
+                ).await?;
+                Ok(json!(true))
+            }
+            "local_ai_models" => {
+                let mut config = self.local_ai_config()?;
+                if let Some(endpoint) = args["endpoint"].as_str() {
+                    config.endpoint = endpoint.to_owned();
+                    config.validate()?;
+                }
+                encode(assistant::list_chat_models(&config.assistant(8)).await?)
+            }
+            "local_ai_conversations" => encode(self.local_ai.list_chats(chat_scope(&args)?)?),
+            "local_ai_conversation" => encode(self.local_ai.get_chat(arg(&args, "id"), chat_scope(&args)?)?),
+            "local_ai_rename_conversation" => {
+                self.local_ai.rename_chat(arg(&args, "id"), chat_scope(&args)?, arg(&args, "name"))?;
+                Ok(json!(true))
+            }
+            "local_ai_delete_conversation" => {
+                self.local_ai.delete_chat(arg(&args, "id"), chat_scope(&args)?)?;
+                Ok(json!(true))
+            }
+            "local_ai_chat_start" => self.local_ai_chat_start(&args).await,
+            "local_ai_chat_poll" => encode(self.local_ai.progress(arg(&args, "requestId"))?),
+            "local_ai_chat_cancel" => {
+                self.local_ai.cancel(arg(&args, "requestId"))?;
+                Ok(json!(true))
+            }
             "assistant_chat" => {
                 self.assistant_chat(args.get("request").unwrap_or(&args))
                     .await
@@ -625,9 +756,11 @@ impl AppState {
             "assistant_completion" => {
                 let request = args.get("request").unwrap_or(&args);
                 let settings = self.store.settings()?;
-                let ai = &settings["ai"];
-                let config = saved_assistant_config(ai, 30);
-                let mode = ai["completionMode"].as_str().unwrap_or_default();
+                let legacy = &settings["ai"];
+                let local = LocalAiConfig::from_settings(&settings)?;
+                let has_local = settings.get("localOllama").is_some();
+                let config = if has_local { local.assistant(30) } else { saved_assistant_config(legacy, 30) };
+                let mode = if has_local { local.completion_mode.as_str() } else { legacy["completionMode"].as_str().unwrap_or_default() };
                 let trigger = arg(request, "trigger");
                 if config.provider != assistant::AiProvider::Ollama
                     || (trigger != "manual" && trigger != "automatic")
@@ -643,12 +776,12 @@ impl AppState {
                     self.quick_query(arg(request, "quickSessionId")).await?;
                     "sqlite"
                 };
-                encode(assistant::complete_editor(
-                    config,
-                    engine,
-                    arg(request, "prefix"),
-                    arg(request, "suffix"),
-                ).await?)
+                let mut cancel = self.local_ai_cancel_signal();
+                let result = tokio::select! {
+                    _ = cancel.changed() => return Err("Suggerimento Ollama interrotto.".into()),
+                    reply = assistant::complete_editor(config, engine, arg(request, "prefix"), arg(request, "suffix")) => reply?,
+                };
+                encode(result)
             }
             "assistant_models" => {
                 let config: assistant::AiConfig = decode(
@@ -1184,6 +1317,68 @@ impl AppState {
             _ => Err("Azione ambiente sconosciuta".into()),
         }
     }
+    fn local_ai_config(&self) -> Result<LocalAiConfig, String> {
+        LocalAiConfig::from_settings(&self.store.settings()?)
+    }
+    pub(crate) fn local_ai_cancel_signal(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.local_ai.cancellation_signal()
+    }
+    pub(crate) async fn managed_ollama_config(&self) -> Result<assistant::AiConfig, String> {
+        let config = self.local_ai_config()?;
+        if config.model.trim().is_empty() {
+            return Err("Scegli un modello nella configurazione Ollama.".into());
+        }
+        let prepared = config.assistant(120);
+        if config.startup == Some(Startup::Automatic) && self.local_ai.auto_allowed() {
+            let mut cancelled = self.local_ai_cancel_signal();
+            let request = uuid::Uuid::new_v4().to_string();
+            let launch = self.local_ai.daemon.start(
+                &prepared, &request, || self.local_ai.auto_allowed(), || {},
+            ).await?;
+            if !launch.accepted {
+                return Err("Avvio Ollama interrotto.".into());
+            }
+            if launch.state.is_some() {
+                tokio::select! {
+                    biased;
+                    _ = cancelled.changed() => return Err("Avvio Ollama interrotto.".into()),
+                    result = self.local_ai.daemon.wait_ready(&prepared) => result?,
+                }
+            }
+        }
+        Ok(prepared)
+    }
+    async fn local_ai_chat_start(&self, args: &Value) -> Result<Value, String> {
+        let cancel = self.local_ai_cancel_signal();
+        let config = self.managed_ollama_config().await?;
+        let scope = chat_scope(args)?;
+        let context = &args["context"];
+        let include_query = context["includeQuery"].as_bool() == Some(true);
+        let include_rows = context["includeRows"].as_bool() == Some(true);
+        let include_schema = context["includeSchema"].as_bool() == Some(true);
+        let schema = if include_schema {
+            match scope {
+                ChatScope::Work => Some(encode(self.session(arg(context, "sessionId")).await?.introspect().await?)?),
+                ChatScope::Quick => Some(encode(self.quick_query(arg(context, "quickSessionId")).await?.schema().await?)?),
+            }
+        } else { None };
+        let engine = match (scope, arg(context, "engine")) {
+            (ChatScope::Quick, _) => Some("sqlite".into()),
+            (_, "sqlite" | "postgresql" | "mysql" | "mariadb" | "mongodb") => Some(arg(context, "engine").into()),
+            _ => None,
+        };
+        let request = assistant::AiRequest {
+            config,
+            prompt: arg(args, "message").to_owned(),
+            engine,
+            history: Vec::new(),
+            consent: assistant::ContextConsent { include_query, include_rows, include_schema },
+            query: include_query.then(|| arg(context, "query").to_owned()),
+            schema,
+            rows: include_rows.then(|| context["rows"].clone()),
+        };
+        encode(self.local_ai.submit(arg(args, "requestId").to_owned(), arg(args, "conversationId"), scope, request, cancel)?)
+    }
     async fn assistant_chat(&self, r: &Value) -> Result<Value, String> {
         let settings = self.store.settings()?;
         let config = saved_assistant_config(&settings["ai"], 120);
@@ -1256,7 +1451,15 @@ impl AppState {
         } else {
             None
         };
-        encode(assistant::complete(request, key).await?.content)
+        if request.config.provider == assistant::AiProvider::Ollama {
+            let mut cancel = self.local_ai_cancel_signal();
+            tokio::select! {
+                _ = cancel.changed() => Err("Risposta Ollama interrotta.".into()),
+                reply = assistant::complete(request, key) => encode(reply?.content),
+            }
+        } else {
+            encode(assistant::complete(request, key).await?.content)
+        }
     }
     async fn transfer_data(&self, r: &Value) -> Result<Value, String> {
         let s = self.session(arg(r, "sessionId")).await?;

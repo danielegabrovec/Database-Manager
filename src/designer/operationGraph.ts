@@ -90,37 +90,73 @@ export function initialGraph(): GraphDraft {
 
 export function loadGraphDraft(key: string): GraphDraft {
   try {
-    const draft = JSON.parse(
-      localStorage.getItem(key) || "null",
-    ) as GraphDraft | null;
-    if (
-      !draft ||
-      !Array.isArray(draft.nodes) ||
-      !Array.isArray(draft.edges) ||
-      draft.nodes.length > 10 ||
-      draft.edges.length > 9
-    )
-      return initialGraph();
-    if (
-      draft.nodes.some(
-        (node) =>
-          !Object.hasOwn(GRAPH_LABELS, node.id) ||
-          !Number.isFinite(node.position?.x) ||
-          !Number.isFinite(node.position?.y),
-      ) ||
-      draft.edges.some(
-        (edge) =>
-          !Object.hasOwn(GRAPH_LABELS, edge.source) ||
-          !Object.hasOwn(GRAPH_LABELS, edge.target),
-      )
-    )
-      return initialGraph();
-    return draft;
+    return readGraphDraft(JSON.parse(localStorage.getItem(key) || "null"));
   } catch {
     return initialGraph();
   }
 }
 
+export function readGraphDraft(value: unknown): GraphDraft {
+  const draft = value as GraphDraft | null;
+  if (
+    !draft ||
+    !Array.isArray(draft.nodes) ||
+    !Array.isArray(draft.edges) ||
+    draft.nodes.length > 10 ||
+    draft.edges.length > 9
+  )
+    throw new Error("Formato del grafo non valido.");
+  const ids = new Set(draft.nodes.map((node) => node?.id));
+  if (
+    !ids.has("source") ||
+    ids.size !== draft.nodes.length ||
+    draft.nodes.some(
+      (node) =>
+        !node ||
+        !Object.hasOwn(GRAPH_LABELS, node.id) ||
+        !Number.isFinite(node.position?.x) ||
+        !Number.isFinite(node.position?.y) ||
+        (node.table !== undefined && typeof node.table !== "string") ||
+        (node.operation !== undefined &&
+          !["insert", "update", "delete"].includes(node.operation)) ||
+        (node.options &&
+          (typeof node.options !== "object" || Array.isArray(node.options))) ||
+        [node.values, node.filters].some(
+          (fields) =>
+            fields !== undefined &&
+            (!Array.isArray(fields) ||
+              fields.length > 500 ||
+              fields.some(
+                (field) =>
+                  !field ||
+                  typeof field.column !== "string" ||
+                  typeof field.text !== "string" ||
+                  ![
+                    "auto",
+                    "text",
+                    "integer",
+                    "decimal",
+                    "float",
+                    "boolean",
+                    "datetime",
+                    "null",
+                    "json",
+                    "binary",
+                  ].includes(field.type),
+              )),
+        ),
+    ) ||
+    draft.edges.some(
+      (edge) =>
+        !edge ||
+        typeof edge.id !== "string" ||
+        !ids.has(edge.source) ||
+        !ids.has(edge.target),
+    )
+  )
+    throw new Error("Nodi o collegamenti del grafo non validi.");
+  return draft;
+}
 export function insertGraphNode(draft: GraphDraft, id: NodeKind): GraphDraft {
   if (draft.nodes.some((node) => node.id === id)) return draft;
   const terminal = id === "read" || id === "write";
@@ -254,13 +290,25 @@ export function compileOperationGraph(
     const options = Object.assign(
       {},
       INITIAL_READ,
-      ...sequence.map((item) => item.options),
+      ...sequence.map((item) =>
+        Object.fromEntries(
+          Object.entries(item.options || {}).filter(
+            ([, value]) => value !== undefined,
+          ),
+        ),
+      ),
     );
     options.operation = join ? "join" : aggregate ? "aggregate" : "select";
     options.filters = filterDrafts.map((filter) => ({
       column: filter.column,
       operator: filter.operator,
       value: filter.text,
+      boundValue:
+        engine === "mongodb" ||
+        filter.type === "auto" ||
+        filter.operator.includes("NULL")
+          ? undefined
+          : explicitReadValue(filter),
     }));
     const result = buildOperation(engine, table, schema, options);
     return {
@@ -359,4 +407,26 @@ export function compileOperationGraph(
     ),
   };
   return { kind: "write" as const, operation };
+}
+
+function explicitReadValue(filter: FilterDraft): unknown {
+  if (filter.type === "text") return filter.text;
+  if (filter.type === "null" || filter.type === "auto")
+    throw new Error("Scegli un valore esplicito per il confronto.");
+  const value = parseCell(
+    filter.text,
+    {
+      name: filter.column,
+      dataType: filter.type,
+      nullable: true,
+      primaryKey: false,
+    },
+    { type: filter.type },
+    false,
+  );
+  if (value.type === "integer" && Number.isSafeInteger(Number(value.value)))
+    return Number(value.value);
+  if (value.type === "float") return Number(value.value);
+  if (value.type === "boolean") return value.value;
+  return value;
 }

@@ -32,10 +32,7 @@ export function importGraphQuery(
     throw new Error("Apri un database del motore della query e riprova.");
   if (!draft.query.trim() || draft.query.length > 64 * 1024)
     throw new Error("Inserisci una query di massimo 64 KiB.");
-  if (engine === "mongodb")
-    throw new Error(
-      "Per MongoDB puoi costruire il diagramma dalla collezione e rivedere i comandi JSON nell’editor.",
-    );
+  if (engine === "mongodb") return importMongoFind(draft.query, schema);
   const parameters = draft.parameters || {};
   const tokens: string[] = [];
   TOKEN.lastIndex = 0;
@@ -79,6 +76,7 @@ export function importGraphQuery(
     let text: string;
     let type: CellType | "auto" = "auto";
     if (token.startsWith("'")) {
+      type = "text";
       text = token.slice(1, -1).replaceAll("''", "'");
       if (text.includes("\\"))
         throw new Error(
@@ -88,7 +86,12 @@ export function importGraphQuery(
       DECIMAL.test(token) ||
       ["TRUE", "FALSE"].includes(token.toUpperCase())
     ) {
-      text = token;
+      type = ["TRUE", "FALSE"].includes(token.toUpperCase())
+        ? "boolean"
+        : token.includes(".")
+          ? "float"
+          : "integer";
+      text = type === "boolean" ? token.toLowerCase() : token;
     } else if (token.toUpperCase() === "NULL") {
       text = "";
       type = "null";
@@ -107,6 +110,9 @@ export function importGraphQuery(
         type = "null";
       } else if (["string", "boolean", "number"].includes(typeof raw)) {
         text = String(raw);
+        if (typeof raw === "number")
+          type = Number.isInteger(raw) ? "integer" : "float";
+        if (typeof raw === "boolean") type = "boolean";
       } else if (
         raw &&
         typeof raw === "object" &&
@@ -266,5 +272,127 @@ export function importGraphQuery(
   }
   accept(";");
   if (position !== tokens.length) throw new Error(UNSUPPORTED);
+  return graph;
+}
+
+function importMongoFind(text: string, schema: SchemaSnapshot): GraphDraft {
+  const cmd = JSON.parse(text);
+  if (
+    !cmd ||
+    typeof cmd.find !== "string" ||
+    Object.keys(cmd).some(
+      (k) => !["find", "filter", "sort", "projection", "limit"].includes(k),
+    )
+  )
+    throw new Error(
+      "Il grafo importa find con proiezione inclusiva, ordinamento singolo e limite. Apri il comando completo nell’editor.",
+    );
+  const table = schema.tables.find(
+    (t) => t.name === cmd.find && canBrowseData(t),
+  );
+  if (!table) throw new Error("Collezione non presente nello schema.");
+  let graph = initialGraph();
+  graph.nodes[0].table = objectKey(table);
+  function add(node: GraphNode) {
+    graph = insertGraphNode(graph, node.id);
+    graph.nodes = graph.nodes.map((old) =>
+      old.id === node.id ? { ...old, ...node, position: old.position } : old,
+    );
+  }
+  const position = { x: 0, y: 0 };
+  const field = (key: string) => {
+    if (
+      key.startsWith("$") ||
+      key.includes(".") ||
+      !table!.columns.some((c) => c.name === key)
+    )
+      throw new Error("Campo non rappresentabile nel grafo: " + key);
+    return key;
+  };
+  if (
+    cmd.filter !== undefined &&
+    (!cmd.filter || typeof cmd.filter !== "object" || Array.isArray(cmd.filter))
+  )
+    throw new Error("Il filtro find deve essere un oggetto.");
+  const filters: FilterDraft[] = [];
+  for (const [key, raw] of Object.entries(cmd.filter || {})) {
+    const column = field(key);
+    const ops: Record<string, GraphOperator> = {
+      $eq: "=",
+      $ne: "!=",
+      $lt: "<",
+      $lte: "<=",
+      $gt: ">",
+      $gte: ">=",
+    };
+    const entries =
+      raw !== null && typeof raw === "object"
+        ? Object.entries(raw)
+        : [["$eq", raw] as const];
+    if (!entries.length)
+      throw new Error("Filtro MongoDB composto non rappresentabile.");
+    for (const [op, val] of entries) {
+      if (
+        !Object.hasOwn(ops, op) ||
+        val === null ||
+        !["string", "boolean", "number"].includes(typeof val)
+      )
+        throw new Error("Tipo o operatore del filtro non rappresentabile.");
+      const type = table!.columns
+        .find((c) => c.name === key)!
+        .dataType.toLowerCase();
+      if (
+        (typeof val === "number" &&
+          (!Number.isSafeInteger(val) ||
+            !["int", "int32", "integer"].includes(type))) ||
+        (typeof val === "boolean" && !["bool", "boolean"].includes(type)) ||
+        (typeof val === "string" && !["string", "text"].includes(type))
+      )
+        throw new Error(
+          "Il tipo del filtro richiede Extended JSON nell’editor.",
+        );
+      filters.push({
+        column,
+        operator: ops[op],
+        type: "auto",
+        text: String(val),
+      });
+    }
+  }
+  if (filters.length) add({ id: "filter", position, filters });
+  if (cmd.projection !== undefined) {
+    if (
+      !cmd.projection ||
+      typeof cmd.projection !== "object" ||
+      Array.isArray(cmd.projection) ||
+      Object.values(cmd.projection).some((v) => v !== 1)
+    )
+      throw new Error("È supportata la proiezione inclusiva.");
+    add({
+      id: "projection",
+      position,
+      options: { columns: Object.keys(cmd.projection).map(field) },
+    });
+  }
+  if (cmd.sort !== undefined) {
+    if (
+      !cmd.sort ||
+      typeof cmd.sort !== "object" ||
+      Object.keys(cmd.sort).length !== 1
+    )
+      throw new Error("Scegli un solo campo di ordinamento.");
+    const [key, dir] = Object.entries(cmd.sort)[0];
+    if (dir !== 1 && dir !== -1) throw new Error("Ordinamento non valido.");
+    add({
+      id: "order",
+      position,
+      options: { orderBy: field(key), descending: dir === -1 },
+    });
+  }
+  if (cmd.limit !== undefined) {
+    if (!Number.isInteger(cmd.limit) || cmd.limit < 1 || cmd.limit > 10000)
+      throw new Error("Limite non rappresentabile.");
+    add({ id: "limit", position, options: { limit: cmd.limit } });
+  }
   return graph;
 }

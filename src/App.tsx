@@ -86,6 +86,26 @@ import { TableDataWorkspace } from "./components/TableDataWorkspace";
 import { TableDesignerView } from "./views/TableDesignerView";
 import { QueryLibraryView } from "./views/QueryLibraryView";
 import { WorkspaceNavigation } from "./components/WorkspaceNavigation";
+import {
+  WorkbenchMenu,
+  type WorkbenchCommand,
+  type MenuGroup,
+} from "./components/WorkbenchMenu";
+import {
+  LocalAiControls,
+  LocalAssistantWorkbench,
+  useLocalAiEditorSettings,
+} from "./components/LocalAssistantWorkbench";
+import { ProjectGoalDialog } from "./views/ProjectGoalDialog";
+import { buildProjectDdl } from "./designer/schemaProject";
+import { ApplicationProjectView } from "./views/ApplicationProjectView";
+import {
+  loadApplicationProject,
+  loadRecentApplicationProjects,
+  saveApplicationProject,
+  type ApplicationProject,
+} from "./project/applicationProject";
+import "./release-workbench.css";
 import { WorkspaceLanding } from "./components/WorkspaceLanding";
 import { WorkspaceFileExplorer } from "./components/WorkspaceFileExplorer";
 import { QuickQueriesSidebar } from "./components/QuickQueriesSidebar";
@@ -139,7 +159,7 @@ import { CodegenView } from "./views/CodegenView";
 import { OperationGraphView } from "./views/OperationGraphView";
 import { QuickQueriesView } from "./views/QuickQueriesView";
 import { useQuickQueries } from "./useQuickQueries";
-import { readAssistantSettings } from "./editor/assistantContext";
+
 import { LabView } from "./views/LabView";
 import { GuideView } from "./views/GuideView";
 import { SchemaView, type StructureObjectRef } from "./views/SchemaView";
@@ -193,6 +213,7 @@ const WORKSPACE_VIEWS = {
   designer: "Designer",
   builder: "Grafo",
   codegen: "Codice",
+  project: "Progetto applicativo",
 } as const;
 type WorkspaceTab = keyof typeof WORKSPACE_VIEWS;
 function isWorkspaceTab(value: string): value is WorkspaceTab {
@@ -227,11 +248,33 @@ export default function App() {
   const [boot, setBoot] = useState<Bootstrap>(EMPTY_BOOTSTRAP);
   const [initializing, setInitializing] = useState(true);
   const [bootError, setBootError] = useState("");
-  const [view, setViewState] = useState<View>(() =>
-    NAV.some((item) => item.id === LOCAL_UI.lastView)
-      ? (LOCAL_UI.lastView as View)
-      : "home",
+  const [view, setViewState] = useState<View>("home");
+  const lastWork = useRef<View | null>(
+    NAV.find((item) => item.id === LOCAL_UI.lastView)?.id ?? null,
   );
+  const [applicationProject, setApplicationProject] = useState(
+    loadApplicationProject,
+  );
+  const [recentProjects, setRecentProjects] = useState(
+    loadRecentApplicationProjects,
+  );
+  const [projectCommand, setProjectCommand] = useState<{
+    id: string;
+    action: "test" | "copy" | "integrate" | "reimport" | "export";
+  }>();
+  const [projectGoal, setProjectGoal] = useState<string | null>(null);
+  const [homePrompt, setHomePrompt] = useState<{
+    id: string;
+    text: string;
+    send: boolean;
+  }>();
+  const [conversationId, setConversationId] = useState<string>();
+  const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const resized = () => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", resized);
+    return () => window.removeEventListener("resize", resized);
+  }, []);
   const viewRef = useRef(view);
   const quickActive = view === "quick";
   const quick = useQuickQueries(quickActive && !initializing);
@@ -286,6 +329,8 @@ export default function App() {
   }, [workspaceFolder, workspaceTabs, assistantWidth]);
   function setView(next: View) {
     navigationTouched.current = true;
+    if (next !== "project") setProjectCommand(undefined);
+    if (next !== "home") lastWork.current = next;
     if (next === "powershell") setPowerShellMounted(true);
     if (next === "library") setQueryCatalogMounted(true);
     if (isWorkspaceTab(next))
@@ -305,6 +350,8 @@ export default function App() {
     const previous = navigationHistory.current.pop();
     if (!previous) return;
     setHistoryLength(navigationHistory.current.length);
+    if (previous !== "home") lastWork.current = previous;
+    if (previous !== "project") setProjectCommand(undefined);
     viewRef.current = previous;
     setViewState(previous);
   }
@@ -470,11 +517,12 @@ export default function App() {
     setProfileDialog(null);
   }
   const [assistant, setAssistant] = useState(false);
+  const [compatiblePanel, setCompatiblePanel] = useState(false);
+  const cloudConfigured =
+    (boot.settings.ai as { provider?: string } | undefined)?.provider ===
+    "openai-compatible";
   const assistantVisible = quickActive ? quickAssistant : assistant;
-  const quickSettings =
-    readAssistantSettings(boot.settings).provider === "ollama"
-      ? boot.settings
-      : {};
+  const quickSettings = useLocalAiEditorSettings(boot.settings);
   const [sidebarTab, setSidebarTab] = useState("explorer");
   const [explorerSearch, setExplorerSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -532,12 +580,12 @@ export default function App() {
   const documentSchema = documentEngine === engine ? schema : null;
   sqlContextRef.current = { engine: documentEngine, schema: documentSchema };
   const localCompletionContext = useRef({
-    settings: boot.settings,
+    settings: quickSettings,
     engine: documentEngine,
     documentId: activeDocumentId,
   });
   localCompletionContext.current = {
-    settings: boot.settings,
+    settings: quickSettings,
     engine: documentEngine,
     documentId: activeDocumentId,
   };
@@ -755,11 +803,7 @@ export default function App() {
           !navigationTouched.current &&
           NAV.some((item) => item.id === data.settings.lastView)
         ) {
-          const restored = data.settings.lastView as View;
-          viewRef.current = restored;
-          setViewState(restored);
-          if (restored === "powershell") setPowerShellMounted(true);
-          if (restored === "library") setQueryCatalogMounted(true);
+          lastWork.current = data.settings.lastView as View;
         }
         setProfileId(String(data.settings.lastProfileId || ""));
         draftsRef.current = {
@@ -836,7 +880,7 @@ export default function App() {
           sidebarWidth,
           queryWorkspace: workspaceSnapshot,
           fileRecovery,
-          lastView: view,
+          lastView: lastWork.current ?? "home",
           recoveryUpdatedAt,
         }),
       );
@@ -855,7 +899,7 @@ export default function App() {
       sidebarWidth,
       queryWorkspace: workspaceSnapshot,
       fileRecovery,
-      lastView: view,
+      lastView: lastWork.current ?? "home",
       recoveryUpdatedAt,
     };
     setRecoveryStatus("saving");
@@ -1027,7 +1071,7 @@ export default function App() {
         sidebarWidth,
         queryWorkspace: workspaceSnapshot,
         fileRecovery,
-        lastView: view,
+        lastView: lastWork.current ?? "home",
         recoveryUpdatedAt: Date.now(),
       };
       try {
@@ -1041,7 +1085,7 @@ export default function App() {
         draft: query,
         queryWorkspace: workspaceSnapshot,
         fileRecovery,
-        lastView: view,
+        lastView: lastWork.current ?? "home",
         sidebarWidth,
         theme,
         mode,
@@ -2137,10 +2181,177 @@ export default function App() {
     )
     .slice(0, 30);
   const noConnection = !sessionId && !result;
+  function changeProject(project: ApplicationProject) {
+    setApplicationProject(project);
+    try {
+      saveApplicationProject(project);
+      setRecentProjects(loadRecentApplicationProjects());
+    } catch (cause) {
+      notify("Salvataggio progetto: " + errorMessage(cause), true);
+    }
+  }
+  const projectAction = (
+    action: "test" | "copy" | "integrate" | "reimport" | "export",
+  ) => {
+    setView("project");
+    setProjectCommand({ id: newId(), action });
+  };
+  const command = (
+    id: string,
+    group: MenuGroup,
+    label: string,
+    run: () => void,
+    shortcut?: string,
+    disabled = false,
+  ): WorkbenchCommand => ({ id, group, label, run, shortcut, disabled });
+  const cmdGroups: Partial<Record<View, MenuGroup>> = {
+    project: "File",
+    files: "File",
+    editor: "Query",
+    quick: "Query",
+    builder: "Query",
+    library: "Query",
+    data: "Database",
+    designer: "Database",
+    schema: "Database",
+    laboratory: "Strumenti",
+    settings: "Strumenti",
+    transfer: "Strumenti",
+    environments: "Strumenti",
+    powershell: "Strumenti",
+    codegen: "Strumenti",
+  };
+  const activeEditor = quickActive ? quickEditorRef.current : editorRef.current;
+  const edit = (action: string) => {
+    activeEditor?.focus();
+    activeEditor?.trigger("menu", action, null);
+  };
+  const commands: WorkbenchCommand[] = [
+    command("home", "File", "Home", () => setView("home")),
+    command("new", "File", "Nuovo lavoro…", () => setWizard(true)),
+    command(
+      "browse",
+      "File",
+      "Apri file…",
+      () => showFileCenter(true),
+      "Ctrl+O",
+    ),
+    command(
+      "folder",
+      "File",
+      "Apri cartella…",
+      pickWorkspaceFolder,
+      "Ctrl+Maiusc+O",
+    ),
+    command(
+      "save",
+      "File",
+      "Salva query",
+      () => saveRef.current(),
+      "Ctrl+S",
+      view !== "editor",
+    ),
+    ...NAV.map((item) =>
+      command(item.id, cmdGroups[item.id] || "Strumenti", item.label, () =>
+        setView(item.id),
+      ),
+    ),
+    command(
+      "undo",
+      "Modifica",
+      "Annulla",
+      () => edit("undo"),
+      "Ctrl+Z",
+      !(view === "editor" || quickActive),
+    ),
+    command(
+      "redo",
+      "Modifica",
+      "Ripeti",
+      () => edit("redo"),
+      "Ctrl+Y",
+      !(view === "editor" || quickActive),
+    ),
+    command(
+      "find",
+      "Modifica",
+      "Trova nell’editor",
+      () => edit("actions.find"),
+      "Ctrl+F",
+      !(view === "editor" || quickActive),
+    ),
+    command("connect", "Database", "Nuova connessione…", () =>
+      openNewConnection(),
+    ),
+    command(
+      "run",
+      "Query",
+      "Esegui query",
+      () => (quickActive ? void quick.execute() : void run()),
+      "Ctrl+Invio",
+      !(view === "editor" || quickActive),
+    ),
+    command("project-test", "Database", "Prova progetto", () =>
+      projectAction("test"),
+    ),
+    command("copy-fn", "Strumenti", "Copia funzione", () =>
+      projectAction("copy"),
+    ),
+    command("export-project", "Strumenti", "Esporta progetto", () =>
+      projectAction("export"),
+    ),
+    command("integrate", "Strumenti", "Integra nell’app", () =>
+      projectAction("integrate"),
+    ),
+    command("reimport", "Strumenti", "Aggiorna dal codice", () =>
+      projectAction("reimport"),
+    ),
+    command(
+      "search",
+      "Visualizza",
+      "Cerca comandi e query",
+      () => setSearchOpen(true),
+      "Ctrl+K",
+    ),
+    command(
+      "back",
+      "Visualizza",
+      "Indietro",
+      goBack,
+      "Alt+Sinistra",
+      !historyLength,
+    ),
+    command("theme", "Visualizza", "Cambia tema", () =>
+      setTheme(dark ? "light" : "dark"),
+    ),
+    command("chat", "AI", "Apri assistente locale", () => {
+      setCompatiblePanel(false);
+      if (quickActive) setQuickAssistant(true);
+      else setAssistant(true);
+    }),
+    ...(cloudConfigured && !quickActive
+      ? [
+          command(
+            "cloud-chat",
+            "AI",
+            "Assistente compatibile configurato",
+            () => {
+              setCompatiblePanel(true);
+              setAssistant(true);
+            },
+          ),
+        ]
+      : []),
+    command("goal", "AI", "Obiettivo con AI locale…", () => setProjectGoal("")),
+    command("ai-settings", "AI", "Impostazioni AI locale", () =>
+      setView("settings"),
+    ),
+    command("help", "Aiuto", "Guida operativa", () => setGuideOpen(true)),
+  ];
 
   return (
     <div
-      className={`app-shell dbm-workbench ${assistantVisible ? "with-assistant" : ""}`}
+      className={`app-shell dbm-workbench ${windowWidth - sidebarWidth - assistantWidth < 580 ? "ai-overlay" : ""} ${assistantVisible ? "with-assistant" : ""}`}
       style={
         {
           "--explorer-width": `${sidebarWidth}px`,
@@ -2485,6 +2696,10 @@ export default function App() {
         </div>
       </aside>
       <main className="main-shell">
+        <div className="wb-command-bar">
+          <WorkbenchMenu commands={commands} />
+          <LocalAiControls variant="toolbar" />
+        </div>
         <header className="topbar">
           <div className="breadcrumbs">
             <button
@@ -2543,6 +2758,9 @@ export default function App() {
               ))}
             </select>
             <button
+              aria-label={
+                assistantVisible ? "Chiudi assistente" : "Apri assistente"
+              }
               className={`assistant-toggle ${assistantVisible ? "active" : ""}`}
               aria-pressed={assistantVisible}
               onClick={() =>
@@ -2613,6 +2831,13 @@ export default function App() {
                         );
                         setWorkspaceTabs(rest);
                         if (view === tab) setView(rest.at(-1) || "home");
+                        navigationHistory.current =
+                          navigationHistory.current.filter(
+                            (item) => item !== tab,
+                          );
+                        setHistoryLength(navigationHistory.current.length);
+                        if (lastWork.current === tab)
+                          lastWork.current = rest.at(-1) ?? null;
                       }}
                     >
                       <X size={13} />
@@ -2628,14 +2853,37 @@ export default function App() {
                 onWizard={() => setWizard(true)}
                 onResume={() =>
                   setView(
-                    workspaceTabs.at(-1) ||
+                    lastWork.current ||
+                      workspaceTabs.at(-1) ||
                       (query || documentSnapshot.length > 1
                         ? "editor"
                         : "files"),
                   )
                 }
+                onQuick={() => setView("quick")}
+                onAsk={(text) => {
+                  setCompatiblePanel(false);
+                  setConversationId(undefined);
+                  setHomePrompt({ id: newId(), text, send: true });
+                  setAssistant(true);
+                }}
+                onConversation={(id) => {
+                  setCompatiblePanel(false);
+                  setHomePrompt(undefined);
+                  setConversationId(id);
+                  setAssistant(true);
+                }}
+                projects={recentProjects}
+                onProject={(id) => {
+                  if (id) {
+                    const project = recentProjects.find((p) => p.id === id);
+                    if (project) changeProject(project);
+                  }
+                  setView("project");
+                }}
                 canResume={
                   !!(
+                    lastWork.current ||
                     workspaceTabs.length ||
                     query ||
                     workspaceFolder ||
@@ -2643,6 +2891,19 @@ export default function App() {
                     documentSnapshot.length > 1
                   )
                 }
+              />
+            )}
+            {view === "project" && (
+              <ApplicationProjectView
+                project={applicationProject}
+                onProjectChange={changeProject}
+                command={projectCommand}
+                activeConnection={{ schema }}
+                onOpenQuery={(text, params, target) =>
+                  void openParameterizedQuery(text, params, "", target)
+                }
+                onOpenLaboratory={() => setView("laboratory")}
+                dark={dark}
               />
             )}
             {filesMounted && (
@@ -3117,7 +3378,7 @@ export default function App() {
                       >
                         Completa <kbd>Ctrl Spazio</kbd>
                       </Button>
-                      {isLocalCompletionEnabled(boot.settings) && (
+                      {isLocalCompletionEnabled(quickSettings) && (
                         <Button
                           onClick={() =>
                             void editorRef.current
@@ -3982,7 +4243,13 @@ export default function App() {
               />
             )}
             {view === "settings" && (
-              <SettingsView settings={boot.settings} onSave={updateSettings} />
+              <>
+                <LocalAiControls variant="settings" />
+                <SettingsView
+                  settings={boot.settings}
+                  onSave={updateSettings}
+                />
+              </>
             )}
           </div>
         )}
@@ -4144,45 +4411,107 @@ export default function App() {
             );
           }}
         />
-        <AssistantPanel
-          open={!quickActive && assistant}
-          sessionId={documentSchema ? sessionId : ""}
-          engine={documentEngine}
-          documentId={activeDocumentId}
-          query={query}
-          rows={
-            documentSchema && (view === "editor" || view === "data")
-              ? activeResult?.rows.slice(0, 20) || []
-              : []
+        {compatiblePanel && cloudConfigured && !quickActive && (
+          <AssistantPanel
+            open={assistantVisible}
+            sessionId={documentSchema ? sessionId : ""}
+            documentId={activeDocumentId}
+            engine={documentEngine}
+            query={view === "editor" ? query : ""}
+            rows={view === "data" ? activeResult?.rows.slice(0, 20) || [] : []}
+            settings={boot.settings}
+            onClose={() => setAssistant(false)}
+            onNewQuery={(text, target) => void openQuery(text, "", target)}
+            onInsertQuery={insertQueryElement}
+            onSettings={() => setView("settings")}
+          />
+        )}
+        <LocalAssistantWorkbench
+          active={
+            assistantVisible &&
+            !(compatiblePanel && cloudConfigured && !quickActive)
           }
-          settings={boot.settings}
-          onClose={() => setAssistant(false)}
-          onNewQuery={(text, target) => void openQuery(text, "", target)}
-          onInsertQuery={insertQueryElement}
-          onSettings={() => setView("settings")}
-        />
-        <AssistantPanel
-          open={quickActive && quickAssistant}
-          sessionId=""
-          quickSessionId={quick.session?.sessionId ?? undefined}
-          engine="sqlite"
-          documentId="quick-queries"
-          query={quick.query}
-          rows={quick.result?.sets[0]?.rows.slice(0, 20) ?? []}
-          settings={quickSettings}
-          onClose={() => setQuickAssistant(false)}
-          newQueryLabel="Usa nel simulatore"
-          onNewQuery={async (text) => {
-            if (
-              !quick.query.trim() ||
-              (await confirm("Sostituire il testo della query di simulazione?"))
+          scope={quickActive ? "quick" : "work"}
+          context={
+            quickActive
+              ? {
+                  engine: "sqlite",
+                  quickSessionId: quick.session?.sessionId,
+                  query: quick.query,
+                  rows: quick.result?.sets[0]?.rows.slice(0, 20),
+                }
+              : view === "home"
+                ? undefined
+                : {
+                    documentId: activeDocumentId,
+                    engine: documentEngine,
+                    sessionId: documentSchema ? sessionId : undefined,
+                    query: view === "editor" ? query : undefined,
+                    rows: ["editor", "data"].includes(view)
+                      ? activeResult?.rows.slice(0, 20)
+                      : undefined,
+                  }
+          }
+          initialPrompt={quickActive ? undefined : homePrompt}
+          initialConversationId={quickActive ? undefined : conversationId}
+          onSuggestion={({ text, engine: sourceEngine }) => {
+            if (quickActive) insertQuickQuery(text);
+            else if (
+              view === "editor" &&
+              (!sourceEngine || sourceEngine === documentEngine)
             )
-              quick.setQuery(text);
+              insertQueryElement(text);
+            else void openQuery(text, "", sourceEngine);
           }}
-          onInsertQuery={insertQuickQuery}
-          onSettings={() => setView("settings")}
+          onClose={() =>
+            quickActive ? setQuickAssistant(false) : setAssistant(false)
+          }
+          onAction={(action) => setProjectGoal(action.payload?.text ?? "")}
         />
       </div>
+      {projectGoal !== null && (
+        <ProjectGoalDialog
+          currentProject={applicationProject}
+          onDesign={(proposed) => {
+            const matching = proposed.databases.filter(
+              (db) => db.engine === engine,
+            );
+            if (matching.length !== 1) {
+              notify(
+                "Scegli una singola destinazione dello stesso motore prima di importare lo schema.",
+                true,
+              );
+              return;
+            }
+            const db = matching[0];
+            setSchemaImport({
+              id: newId(),
+              name: db.name,
+              engine,
+              format: engine === "mongodb" ? "mongodb" : "sql",
+              source: buildProjectDdl(engine, db.tables),
+            });
+            setProjectGoal(null);
+            setView("designer");
+          }}
+          initialGoal={projectGoal}
+          sessionId={sessionId}
+          target={profile?.name ?? ""}
+          readOnly={!!profile?.readOnly}
+          onClose={() => setProjectGoal(null)}
+          onProject={(project, language) => {
+            try {
+              localStorage.setItem(
+                "dbm-project-language:" + project.id,
+                language,
+              );
+            } catch {}
+            changeProject(project);
+            setProjectGoal(null);
+            setView("project");
+          }}
+        />
+      )}
       {wizard && (
         <NewWorkspaceDialog
           profiles={boot.profiles}
@@ -4546,21 +4875,27 @@ export default function App() {
               />
             </div>
             <div className="search-command-grid">
-              {NAV.filter((item) =>
-                item.label.toLowerCase().includes(globalSearch.toLowerCase()),
-              ).map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => {
-                    setView(item.id);
-                    setSearchOpen(false);
-                  }}
-                >
-                  <item.icon size={17} />
-                  {item.label}
-                  <ArrowRight size={13} />
-                </button>
-              ))}
+              {commands
+                .filter((item) =>
+                  (item.group + " " + item.label)
+                    .toLowerCase()
+                    .includes(globalSearch.toLowerCase()),
+                )
+                .map((item) => (
+                  <button
+                    key={item.id}
+                    disabled={item.disabled}
+                    onClick={() => {
+                      setSearchOpen(false);
+                      item.run();
+                    }}
+                  >
+                    <span>
+                      {item.group} · {item.label}
+                    </span>
+                    <ArrowRight size={13} />
+                  </button>
+                ))}
             </div>
             <div className="search-results">
               {searchResults.map((item, index) => (

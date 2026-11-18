@@ -37,6 +37,16 @@ pub struct Compiled {
 }
 
 impl Operation {
+    pub(crate) fn qualify_project_destination(&mut self, snapshot: &SchemaSnapshot) {
+        if matches!(snapshot.engine.as_str(), "mysql" | "mariadb") {
+            if let TableRef::Qualified { schema, .. } = &mut self.table {
+                if schema.is_none() {
+                    *schema = Some(snapshot.database.clone());
+                }
+            }
+        }
+    }
+
     pub fn compile(&self, snapshot: &SchemaSnapshot) -> Result<Compiled, String> {
         let table = self.table.resolve(snapshot)?;
         let mongo = snapshot.engine == "mongodb";

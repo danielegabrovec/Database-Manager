@@ -107,7 +107,7 @@ Il comando esegue il build frontend configurato. I risultati sono sotto `src-tau
 
 Senza `--target`, da una toolchain Windows x64 il percorso abituale è `src-tauri/target/release/bundle/nsis/`. Una cartella `releases/` presente nel workspace è un risultato di packaging locale, non un prerequisito del clone pubblico.
 
-Per preparare il pacchetto pubblico completo usare `./scripts/Build-Release.ps1`: compila in `artifacts/public-release-target`, rimappa i percorsi privati di compilazione, esegue la scansione degli asset e prepara installer, ZIP portabile con tutti i testi legali e checksum. `-PackageOnly` usa esclusivamente una build già verificata. Prima della build generare/verificare l’inventario con `python scripts/generate-third-party-notices.py --mpl-source-output artifacts/release-v051`. Lo script non pubblica su GitHub.
+Per preparare il pacchetto pubblico completo usare `./scripts/Build-Release.ps1`: compila in `artifacts/public-release-target`, rimappa i percorsi privati di compilazione, esegue la scansione degli asset e prepara installer, ZIP portabile con tutti i testi legali e checksum. `-PackageOnly` usa esclusivamente una build già verificata. Prima della build generare/verificare l’inventario con `python scripts/generate-third-party-notices.py --mpl-source-output artifacts/release-v060`. Lo script non pubblica su GitHub.
 
 I lockfile e la toolchain rendono ripetibile la procedura, senza una promessa di identità byte per byte fra installer compilati su macchine diverse. La firma digitale è separata; il pacchetto corrente è dichiarato non firmato.
 

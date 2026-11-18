@@ -1,6 +1,6 @@
 # Database Manager — workbench grafico e codice
 
-Questa guida descrive il workbench nel ramo `codex/database-manager-visual-workbench`. La sezione Release conserva la distribuzione 0.5.1.
+Questa guida descrive il workbench grafico. Il percorso con progetti multidatabase, funzioni da copiare, integrazione e assistente locale è nella [guida alla 0.6.0](WORKBENCH-0.6.0.md).
 
 ## Aprire e creare un lavoro
 

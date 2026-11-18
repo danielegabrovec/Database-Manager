@@ -77,7 +77,7 @@ impl QuickQuery {
                     return Err("Concludi la transazione dell’editor prima di copiare il database nella simulazione.".into());
                 }
                 copy_main(&source, &mut baseline)?;
-            } else {
+            } else if dataset != "empty" {
                 lab::seed(&baseline, &dataset)?;
             }
             let mut connection = Connection::open_in_memory().map_err(|e| e.to_string())?;

@@ -1,0 +1,17 @@
+{
+  "name": "Catalogo e archivio",
+  "language": "Python",
+  "databases": [
+    {
+      "name":"catalogo","engine":"sqlite",
+      "schema":"CREATE TABLE clienti (id INTEGER PRIMARY KEY, nome TEXT); CREATE TABLE ordini (id INTEGER PRIMARY KEY, cliente_id INTEGER, totale REAL, FOREIGN KEY(cliente_id) REFERENCES clienti(id));",
+      "seed":[{"table":"clienti","rows":[{"id":1,"nome":"Cliente A"},{"id":2,"nome":"Cliente B"}]},{"table":"ordini","rows":[{"id":1,"cliente_id":1,"totale":7.5}]}],
+      "operations":[{"name":"Ricerca clienti","query":"SELECT id, nome FROM clienti WHERE id = 1 LIMIT 10;"}]
+    },
+    {
+      "name":"archivio","engine":"sqlite","schema":"CREATE TABLE clienti (id INTEGER PRIMARY KEY, nome TEXT);",
+      "seed":[{"table":"clienti","rows":[{"id":1,"nome":"Cliente archiviato"}]}],
+      "operations":[{"name":"Ricerca clienti","query":"SELECT id, nome FROM clienti WHERE id = 1 LIMIT 10;"}]
+    }
+  ]
+}
